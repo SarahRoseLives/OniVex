@@ -1,0 +1,106 @@
+{{ define "view_search" }}
+<div id="view-search" class="flex w-full h-full">
+    <div class="w-72 bg-slate-900 border-r border-slate-800 p-6 flex flex-col gap-6 overflow-y-auto">
+
+        <form action="/" method="GET" id="search-form">
+            <h3 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-4">Search Filters</h3>
+
+            <div class="space-y-4">
+                <div class="space-y-1.5">
+                    <label class="text-xs text-slate-400 font-medium">Keywords</label>
+                    <div class="relative">
+                        <i data-lucide="search" class="absolute left-3 top-2.5 text-slate-500 w-4 h-4"></i>
+                        <input type="text" name="q" value="{{.SearchQuery}}" class="modern-input pl-9" placeholder="Filename...">
+                    </div>
+                </div>
+
+                </div>
+
+            <div class="pt-4 mt-4 border-t border-slate-800">
+                <button type="submit" class="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-lg shadow-lg shadow-emerald-900/20 transition-all flex items-center justify-center gap-2">
+                    <i data-lucide="search" class="w-4 h-4"></i> Search Network
+                </button>
+            </div>
+        </form>
+
+        <div class="mt-auto bg-slate-800/50 rounded-xl p-4 border border-slate-700/50">
+            <div class="flex justify-between items-center mb-3">
+                <span class="text-xs font-semibold text-slate-300">Network Health</span>
+                <i data-lucide="activity" class="w-4 h-4 text-emerald-500"></i>
+            </div>
+            <div class="space-y-2">
+                <div class="flex justify-between text-xs">
+                    <span class="text-slate-500">Known Peers</span>
+                    <span class="text-emerald-400">{{.PeerCount}}</span>
+                </div>
+                <div class="flex justify-between text-xs">
+                    <span class="text-slate-500">Your Address</span>
+                    <span class="text-slate-400 truncate w-24" title="{{.MyAddress}}">{{.MyAddress}}</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="flex-grow flex flex-col bg-slate-950 relative">
+        <div class="h-12 border-b border-slate-800 flex items-center justify-between px-6 bg-slate-900/50 backdrop-blur">
+            <div class="text-sm text-slate-400">
+                {{ if .SearchQuery }}
+                    Searching for "<span class="text-white">{{.SearchQuery}}</span>"
+                {{ else }}
+                    Waiting for query...
+                {{ end }}
+            </div>
+        </div>
+
+        <div class="flex-grow overflow-auto">
+            <table class="modern-table" id="results-table">
+                <thead>
+                    <tr>
+                        <th width="40%">Filename</th>
+                        <th width="15%">Size</th>
+                        <th width="30%">Peer ID</th>
+                        <th width="15%">Action</th>
+                    </tr>
+                </thead>
+                <tbody id="search-results-body">
+                    {{ if .Results }}
+                        {{ range $result := .Results }}
+                            {{ range $file := $result.Files }}
+                            <tr>
+                                <td class="font-medium text-slate-200">
+                                    <div class="flex items-center gap-3">
+                                        <i data-lucide="file" class="w-4 h-4 text-slate-500"></i>
+                                        {{ $file.Name }}
+                                    </div>
+                                </td>
+                                <td class="text-slate-400 font-mono text-xs size-raw">{{ $file.Size }}</td>
+                                <td class="text-slate-500 font-mono text-xs truncate max-w-[150px]" title="{{ $result.PeerID }}">
+                                    {{ $result.PeerID }}
+                                </td>
+                                <td>
+                                    <button onclick="startRealDownload('{{ $result.PeerID }}', '{{ $file.Name }}', '{{ $file.Path }}', '{{ $file.Size }}')"
+                                        class="px-3 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-500 border border-emerald-500/30 rounded text-xs transition-colors">
+                                        Download
+                                    </button>
+                                </td>
+                            </tr>
+                            {{ end }}
+                        {{ end }}
+                    {{ end }}
+                </tbody>
+            </table>
+
+            {{ if not .Results }}
+            <div id="empty-state" class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none mt-12">
+                <div class="w-16 h-16 bg-slate-800 rounded-full flex items-center justify-center text-slate-600 mb-4">
+                    <i data-lucide="search" class="w-8 h-8"></i>
+                </div>
+                <h3 class="text-slate-400 font-medium">
+                    {{ if .SearchQuery }} No results found {{ else }} Ready to search {{ end }}
+                </h3>
+            </div>
+            {{ end }}
+        </div>
+    </div>
+</div>
+{{ end }}

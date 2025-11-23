@@ -1,0 +1,29 @@
+{{ define "view_monitor" }}
+<div id="view-monitor" class="hidden flex-col w-full h-full bg-slate-950 p-6 gap-6">
+    <div class="flex-1 flex flex-col">
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="text-lg font-semibold text-white flex items-center gap-2">
+                <i data-lucide="download-cloud" class="w-5 h-5 text-emerald-500"></i> Active Downloads
+            </h2>
+            <button class="text-xs px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded border border-slate-700 transition-colors" onclick="clearFinished()">Clear Completed</button>
+        </div>
+
+        <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden flex-grow shadow-inner">
+            <div class="overflow-auto h-full">
+                <table class="modern-table">
+                    <thead>
+                        <tr>
+                            <th width="40%">File</th>
+                            <th width="30%">Progress</th>
+                            <th width="15%">Status</th>
+                            <th width="15%">Link</th>
+                        </tr>
+                    </thead>
+                    <tbody id="download-list">
+                        </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{{ end }}

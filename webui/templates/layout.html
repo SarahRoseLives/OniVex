@@ -1,0 +1,139 @@
+{{ define "layout.html" }}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OniVex - Modern P2P</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root { --bg-dark: #0f172a; --bg-panel: #1e293b; --accent-primary: #10b981; --text-main: #f1f5f9; --text-muted: #94a3b8; --border-color: #334155; }
+        body { font-family: 'Inter', sans-serif; background-color: #020617; color: var(--text-main); height: 100vh; width: 100vw; overflow: hidden; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        .modern-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 0.875rem; }
+        .modern-table th { background-color: #1e293b; color: var(--text-muted); font-weight: 600; text-align: left; padding: 12px 16px; border-bottom: 1px solid var(--border-color); position: sticky; top: 0; backdrop-filter: blur(8px); z-index: 10; }
+        .modern-table td { padding: 12px 16px; border-bottom: 1px solid #1e293b; color: var(--text-main); transition: background-color 0.2s; }
+        .modern-table tr:hover td { background-color: rgba(16, 185, 129, 0.05); cursor: pointer; }
+        .nav-tab { @apply px-4 py-3 text-sm font-medium text-slate-400 border-b-2 border-transparent transition-all cursor-pointer hover:text-white; }
+        .nav-tab.active { @apply text-emerald-400 border-emerald-500 bg-slate-800/50; }
+        @keyframes pulse-ring { 0% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); } 70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); } 100% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); } }
+        .status-dot { width: 8px; height: 8px; background-color: var(--accent-primary); border-radius: 50%; animation: pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite; }
+        .modern-input { @apply w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all placeholder-slate-500; }
+        .modern-select { @apply w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 outline-none appearance-none cursor-pointer; background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%2394a3b8' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e"); background-position: right 0.5rem center; background-repeat: no-repeat; background-size: 1.5em 1.5em; }
+    </style>
+</head>
+<body class="bg-slate-950">
+    <div class="w-full h-full flex flex-col overflow-hidden bg-slate-900">
+
+        {{ template "header" . }}
+
+        <div class="flex-grow flex overflow-hidden relative">
+            {{ template "view_search" . }}
+            {{ template "view_monitor" . }}
+            {{ template "view_library" . }}
+        </div>
+
+        {{ template "footer" . }}
+    </div>
+
+    <script>
+        lucide.createIcons();
+
+        function setTab(tabName) {
+            const tabs = ['search', 'monitor', 'library'];
+            tabs.forEach(t => {
+                const btn = document.getElementById(`tab-${t}`);
+                const view = document.getElementById(`view-${t}`);
+                if (t === tabName) {
+                    btn.classList.add('bg-emerald-500/10', 'text-emerald-500', 'border', 'border-emerald-500/20');
+                    btn.classList.remove('text-slate-400', 'hover:text-white');
+                    view.classList.remove('hidden');
+                    if(t === 'monitor') view.style.display = 'flex';
+                } else {
+                    btn.classList.remove('bg-emerald-500/10', 'text-emerald-500', 'border', 'border-emerald-500/20');
+                    btn.classList.add('text-slate-400', 'hover:text-white');
+                    view.classList.add('hidden');
+                }
+            });
+        }
+
+        document.addEventListener("DOMContentLoaded", () => {
+            document.querySelectorAll('.size-raw').forEach(el => {
+                const size = parseInt(el.innerText);
+                if (isNaN(size)) return;
+                const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+                let i = 0; let s = size;
+                while (s >= 1024 && i < units.length - 1) { s /= 1024; i++; }
+                el.innerText = s.toFixed(1) + ' ' + units[i];
+            });
+        });
+
+        // --- REAL BACKEND API LOGIC ---
+        function startRealDownload(peerId, fileName, path, sizeRaw) {
+            setTab('monitor');
+            const proxyUrl = `/api/download?peer=${encodeURIComponent(peerId)}&path=${encodeURIComponent(path)}&name=${encodeURIComponent(fileName)}`;
+            const tbody = document.getElementById('download-list');
+            const row = document.createElement('tr');
+            const rowId = 'dl-' + Math.random().toString(36).substr(2, 9);
+            row.id = rowId;
+
+            row.innerHTML = `
+                <td>
+                    <div class="flex items-center gap-3">
+                        <div class="p-1.5 bg-slate-800 rounded text-emerald-500"><i data-lucide="arrow-down" class="w-4 h-4"></i></div>
+                        <div>
+                            <div class="text-sm font-medium text-white">${fileName}</div>
+                            <div class="text-xs text-slate-500">Saving to server...</div>
+                        </div>
+                    </div>
+                </td>
+                <td>
+                    <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+                        <div class="h-full bg-emerald-500/50 animate-pulse" style="width: 100%"></div>
+                    </div>
+                </td>
+                <td class="text-xs text-yellow-500 status-text">Downloading...</td>
+                <td><span class="text-xs text-slate-500">Server FS</span></td>
+            `;
+            tbody.insertBefore(row, tbody.firstChild);
+            lucide.createIcons();
+
+            fetch(proxyUrl)
+                .then(response => {
+                    if (!response.ok) throw new Error("Transfer failed");
+                    return response.json();
+                })
+                .then(data => {
+                    const r = document.getElementById(rowId);
+                    if(r) {
+                        const status = r.querySelector('.status-text');
+                        status.innerText = "Saved";
+                        status.classList.replace('text-yellow-500', 'text-emerald-500');
+                        const bar = r.querySelector('.animate-pulse');
+                        if (bar) {
+                            bar.classList.remove('animate-pulse');
+                            bar.classList.replace('bg-emerald-500/50', 'bg-emerald-500');
+                        }
+                    }
+                })
+                .catch(err => {
+                    console.error("Download Error:", err);
+                    const r = document.getElementById(rowId);
+                    if(r) {
+                        const status = r.querySelector('.status-text');
+                        status.innerText = "Error";
+                        status.classList.replace('text-yellow-500', 'text-red-500');
+                    }
+                });
+        }
+
+        function clearFinished() { document.getElementById('download-list').innerHTML = ''; }
+    </script>
+</body>
+</html>
+{{ end }}

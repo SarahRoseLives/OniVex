@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"onivex/filesystem" // Now importing filesystem for shared structs
+	"onivex/filesystem"
 
 	"github.com/cretz/bine/tor"
 )
@@ -21,7 +21,6 @@ type PeerManager struct {
 }
 
 // SearchResult holds data returned from a remote peer
-// UPDATED: Now uses strict filesystem.FileMeta instead of raw JSON
 type SearchResult struct {
 	PeerID string                `json:"peer_id"`
 	Files  []filesystem.FileMeta `json:"files"`
@@ -53,6 +52,20 @@ func (pm *PeerManager) GetPeers() []string {
 		list = append(list, p)
 	}
 	return list
+}
+
+// Bootstrap connects to the hardcoded seed nodes to populate the initial peer list
+func (pm *PeerManager) Bootstrap() {
+	if len(BootstrapPeers) == 0 {
+		fmt.Println("⚠️ No bootstrap peers configured. Waiting for manual discovery.")
+		return
+	}
+
+	fmt.Println("🌍 Bootstrapping network connection...")
+	for _, seed := range BootstrapPeers {
+		// Sync with seed nodes in parallel
+		go pm.Sync(seed)
+	}
 }
 
 func (pm *PeerManager) Sync(onionAddr string) {
@@ -111,7 +124,6 @@ func (pm *PeerManager) SearchNetwork(query string) []SearchResult {
 			continue
 		}
 
-		// UPDATED: Decode directly into FileMeta slice
 		var remoteFiles []filesystem.FileMeta
 		if err := json.NewDecoder(resp.Body).Decode(&remoteFiles); err == nil {
 			if len(remoteFiles) > 0 {

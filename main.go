@@ -17,8 +17,10 @@ func main() {
 	// 1. Setup Directories
 	filesystem.EnsureDirectories()
 
-	// 2. Setup Tor Network
-	t, onion, err := network.SetupTor()
+	// 2. Setup Tor Network (EPHEMERAL MODE)
+	// Passing an empty string "" means we generate a random identity every time.
+	// Clients don't need to be persistent, only seeds do.
+	t, onion, err := network.SetupTor("")
 	if err != nil {
 		log.Fatalf("Fatal Network Error: %v", err)
 	}
@@ -29,16 +31,17 @@ func main() {
 
 	// 3. Initialize Discovery
 	peers := discovery.NewPeerManager(t)
-	peers.AddPeer(onion.ID + ".onion") // Add self for testing
+	peers.AddPeer(myAddress) // Add self for testing
 
-	// 4. Start Local Web UI (Non-blocking goroutine)
-	go webui.Start(8080, myAddress, peers)
+	// 4. Start Local Web UI
+	// Pass 't' so the WebUI can dial Tor for downloads
+	go webui.Start(8080, myAddress, peers, t)
 
-	fmt.Printf("\n✨ ONIVEX IS LIVE\n")
+	fmt.Printf("\n✨ ONIVEX CLIENT LIVE\n")
 	fmt.Printf("👉 Tor Access: http://%s\n", myAddress)
 	fmt.Printf("👉 Control UI: http://127.0.0.1:8080\n\n")
 
-	// 5. Setup Tor HTTP Routes (The "Hidden Service" Logic)
+	// 5. Setup Tor HTTP Routes
 	mux := http.NewServeMux()
 	mux.Handle("/", filesystem.GetFileHandler())
 
@@ -58,20 +61,13 @@ func main() {
 		json.NewEncoder(w).Encode(results)
 	})
 
-	// 6. Background Gossip & Search Loop (Test)
+	// 6. Background Bootstrap & Gossip
 	go func() {
-		// Wait for Tor to stabilize
+		// Give Tor a moment to build circuits before trying to bootstrap
 		time.Sleep(15 * time.Second)
-		fmt.Println("\n🔄 Starting Gossip Sync...")
-		peers.Sync(onion.ID + ".onion")
 
-		// AUTOMATED SEARCH TEST
-		// Make sure you have a file in uploads/ for this to find anything!
-		fmt.Println("\n🔎 Testing Search (Querying known peers)...")
-		results := peers.SearchNetwork("") // Empty query returns all files
-		
-		out, _ := json.MarshalIndent(results, "", "  ")
-		fmt.Printf("\n--- SEARCH RESULTS ---\n%s\n----------------------\n", string(out))
+		// Connect to the Seed Nodes defined in discovery/bootstrap.go
+		peers.Bootstrap()
 	}()
 
 	// 7. Block Main Thread with Tor Server
