@@ -25,18 +25,17 @@ func main() {
 	defer t.Close()
 	defer onion.Close()
 
-	myAddress := fmt.Sprintf("http://%v.onion", onion.ID)
+	myAddress := fmt.Sprintf("%v.onion", onion.ID)
 
 	// 3. Initialize Discovery
 	peers := discovery.NewPeerManager(t)
 	peers.AddPeer(onion.ID + ".onion") // Add self for testing
 
 	// 4. Start Local Web UI (Non-blocking goroutine)
-	// This runs on localhost:8080 so you can control the app
 	go webui.Start(8080, myAddress, peers)
 
 	fmt.Printf("\n✨ ONIVEX IS LIVE\n")
-	fmt.Printf("👉 Tor Access: %s\n", myAddress)
+	fmt.Printf("👉 Tor Access: http://%s\n", myAddress)
 	fmt.Printf("👉 Control UI: http://127.0.0.1:8080\n\n")
 
 	// 5. Setup Tor HTTP Routes (The "Hidden Service" Logic)
@@ -52,11 +51,27 @@ func main() {
 		json.NewEncoder(w).Encode(peers.GetPeers())
 	})
 
-	// 6. Background Gossip Loop (Test)
+	mux.HandleFunc("/api/search", func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query().Get("q")
+		results := filesystem.SearchLocal(query)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(results)
+	})
+
+	// 6. Background Gossip & Search Loop (Test)
 	go func() {
-		time.Sleep(5 * time.Second)
+		// Wait for Tor to stabilize
+		time.Sleep(15 * time.Second)
 		fmt.Println("\n🔄 Starting Gossip Sync...")
 		peers.Sync(onion.ID + ".onion")
+
+		// AUTOMATED SEARCH TEST
+		// Make sure you have a file in uploads/ for this to find anything!
+		fmt.Println("\n🔎 Testing Search (Querying known peers)...")
+		results := peers.SearchNetwork("") // Empty query returns all files
+		
+		out, _ := json.MarshalIndent(results, "", "  ")
+		fmt.Printf("\n--- SEARCH RESULTS ---\n%s\n----------------------\n", string(out))
 	}()
 
 	// 7. Block Main Thread with Tor Server

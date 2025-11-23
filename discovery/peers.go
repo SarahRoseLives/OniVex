@@ -18,6 +18,12 @@ type PeerManager struct {
 	Tor        *tor.Tor
 }
 
+// SearchResult holds data returned from a remote peer
+type SearchResult struct {
+	PeerID string            `json:"peer_id"`
+	Files  []json.RawMessage `json:"files"` // Raw JSON matches filesystem.FileMeta structure
+}
+
 // NewPeerManager creates the address book
 func NewPeerManager(t *tor.Tor) *PeerManager {
 	return &PeerManager{
@@ -53,7 +59,6 @@ func (pm *PeerManager) GetPeers() []string {
 func (pm *PeerManager) Sync(onionAddr string) {
 	fmt.Printf("📡 Syncing with %s...\n", onionAddr)
 
-	// 1. Create Dialer
 	dialer, err := pm.Tor.Dialer(context.Background(), nil)
 	if err != nil {
 		fmt.Printf("❌ Dialer Error: %v\n", err)
@@ -65,7 +70,7 @@ func (pm *PeerManager) Sync(onionAddr string) {
 		Timeout:   30 * time.Second,
 	}
 
-	// 2. Request their Peer List
+	// Request their Peer List
 	resp, err := httpClient.Get("http://" + onionAddr + "/api/peers")
 	if err != nil {
 		fmt.Printf("❌ Sync Failed (Peer might be offline): %v\n", err)
@@ -73,20 +78,56 @@ func (pm *PeerManager) Sync(onionAddr string) {
 	}
 	defer resp.Body.Close()
 
-	// 3. Decode JSON Response
 	var newPeers []string
 	if err := json.NewDecoder(resp.Body).Decode(&newPeers); err != nil {
 		fmt.Printf("❌ Invalid JSON from peer: %v\n", err)
 		return
 	}
 
-	// 4. Merge into our list
 	count := 0
 	for _, p := range newPeers {
-		// Avoid adding ourselves if the peer sends our own address back
-		// (Optional check, but good practice)
 		pm.AddPeer(p)
 		count++
 	}
 	fmt.Printf("✅ Sync Complete. Learned %d peers from %s\n", count, onionAddr)
+}
+
+// SearchNetwork asks all known peers for files matching 'query'
+func (pm *PeerManager) SearchNetwork(query string) []SearchResult {
+	peers := pm.GetPeers()
+	fmt.Printf("🔍 Searching %d peers for '%s'...\n", len(peers), query)
+
+	results := []SearchResult{}
+
+	// Sequential search for now (easier to debug logs)
+	for _, p := range peers {
+		dialer, err := pm.Tor.Dialer(context.Background(), nil)
+		if err != nil {
+			continue
+		}
+		client := &http.Client{
+			Transport: &http.Transport{DialContext: dialer.DialContext},
+			Timeout:   15 * time.Second,
+		}
+
+		url := fmt.Sprintf("http://%s/api/search?q=%s", p, query)
+		resp, err := client.Get(url)
+		if err != nil {
+			fmt.Printf("⚠️ Peer %s failed: %v\n", p, err)
+			continue
+		}
+
+		var remoteFiles []json.RawMessage
+		if err := json.NewDecoder(resp.Body).Decode(&remoteFiles); err == nil {
+			if len(remoteFiles) > 0 {
+				results = append(results, SearchResult{
+					PeerID: p,
+					Files:  remoteFiles,
+				})
+			}
+		}
+		resp.Body.Close()
+	}
+
+	return results
 }
