@@ -10,11 +10,14 @@ import (
 	"onivex/discovery"
 	"onivex/filesystem"
 	"onivex/network"
+	"onivex/webui"
 )
 
 func main() {
-	// 1. Setup
+	// 1. Setup Directories
 	filesystem.EnsureDirectories()
+
+	// 2. Setup Tor Network
 	t, onion, err := network.SetupTor()
 	if err != nil {
 		log.Fatalf("Fatal Network Error: %v", err)
@@ -22,44 +25,40 @@ func main() {
 	defer t.Close()
 	defer onion.Close()
 
-	myAddress := fmt.Sprintf("%v.onion", onion.ID)
-	fmt.Printf("\n✨ ONIVEX IS LIVE at http://%s\n\n", myAddress)
+	myAddress := fmt.Sprintf("http://%v.onion", onion.ID)
 
-	// 2. Initialize Discovery
+	// 3. Initialize Discovery
 	peers := discovery.NewPeerManager(t)
-	peers.AddPeer(myAddress) // Add self so we are in the list
+	peers.AddPeer(onion.ID + ".onion") // Add self for testing
 
-	// 3. Setup HTTP Routes
+	// 4. Start Local Web UI (Non-blocking goroutine)
+	// This runs on localhost:8080 so you can control the app
+	go webui.Start(8080, myAddress, peers)
+
+	fmt.Printf("\n✨ ONIVEX IS LIVE\n")
+	fmt.Printf("👉 Tor Access: %s\n", myAddress)
+	fmt.Printf("👉 Control UI: http://127.0.0.1:8080\n\n")
+
+	// 5. Setup Tor HTTP Routes (The "Hidden Service" Logic)
 	mux := http.NewServeMux()
-
-	// -> File Server
 	mux.Handle("/", filesystem.GetFileHandler())
 
-	// -> API: Status
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("OniVex Online"))
 	})
 
-	// -> API: Peer Exchange (The Gossip Endpoint)
 	mux.HandleFunc("/api/peers", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		list := peers.GetPeers()
-		json.NewEncoder(w).Encode(list)
+		json.NewEncoder(w).Encode(peers.GetPeers())
 	})
 
-	// 4. Background Sync Loop
-	// In the future, this will loop through ALL known peers.
-	// For now, it just talks to itself to prove the concept.
+	// 6. Background Gossip Loop (Test)
 	go func() {
-		// Wait for server to start
-		time.Sleep(15 * time.Second)
-
+		time.Sleep(5 * time.Second)
 		fmt.Println("\n🔄 Starting Gossip Sync...")
-		// We ask "ourselves" for the list.
-		// In reality, you would put a friend's onion address here.
-		peers.Sync(myAddress)
+		peers.Sync(onion.ID + ".onion")
 	}()
 
-	// 5. Start Server
+	// 7. Block Main Thread with Tor Server
 	log.Fatal(http.Serve(onion, mux))
 }
