@@ -23,74 +23,129 @@
         .nav-tab.active { @apply text-emerald-400 border-emerald-500 bg-slate-800/50; }
         @keyframes pulse-ring { 0% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); } 70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); } 100% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); } }
         .status-dot { width: 8px; height: 8px; background-color: var(--accent-primary); border-radius: 50%; animation: pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite; }
-
-        /* UPDATED: Removed 'text-black' from @apply and added explicit CSS color property */
-        .modern-input {
-            @apply w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all placeholder-slate-500;
-            color: #000000 !important; /* Force black text */
-        }
-
+        .modern-input { @apply w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all placeholder-slate-500; color: #000000 !important; }
         .modern-select { @apply w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 outline-none appearance-none cursor-pointer; background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%2394a3b8' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e"); background-position: right 0.5rem center; background-repeat: no-repeat; background-size: 1.5em 1.5em; }
     </style>
 </head>
 <body class="bg-slate-950">
     <div class="w-full h-full flex flex-col overflow-hidden bg-slate-900">
-
         {{ template "header" . }}
-
         <div class="flex-grow flex overflow-hidden relative">
             {{ template "view_search" . }}
             {{ template "view_monitor" . }}
             {{ template "view_library" . }}
         </div>
-
         {{ template "footer" . }}
     </div>
 
     <script>
         lucide.createIcons();
 
-        // --- FIX: Clean Tab Switching ---
+        // --- Tab Logic ---
         function setTab(tabName) {
             const tabs = ['search', 'monitor', 'library'];
             tabs.forEach(t => {
                 const btn = document.getElementById(`tab-${t}`);
                 const view = document.getElementById(`view-${t}`);
-
-                // 1. IMPORTANT: Clear inline styles first!
                 view.style.display = '';
-
                 if (t === tabName) {
-                    // Active State
                     btn.classList.add('bg-emerald-500/10', 'text-emerald-500', 'border', 'border-emerald-500/20');
                     btn.classList.remove('text-slate-400', 'hover:text-white');
-
                     view.classList.remove('hidden');
-
-                    // Explicitly set flex for monitor to ensure layout holds
                     if(t === 'monitor') view.style.display = 'flex';
                 } else {
-                    // Inactive State
                     btn.classList.remove('bg-emerald-500/10', 'text-emerald-500', 'border', 'border-emerald-500/20');
                     btn.classList.add('text-slate-400', 'hover:text-white');
-
                     view.classList.add('hidden');
                 }
             });
         }
 
+        // --- Size Formatter ---
+        function formatSize(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
         document.addEventListener("DOMContentLoaded", () => {
+            // Handle static sizes on page load
             document.querySelectorAll('.size-raw').forEach(el => {
                 const size = parseInt(el.innerText);
-                if (isNaN(size)) return;
-                const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-                let i = 0; let s = size;
-                while (s >= 1024 && i < units.length - 1) { s /= 1024; i++; }
-                el.innerText = s.toFixed(1) + ' ' + units[i];
+                if (!isNaN(size)) el.innerText = formatSize(size);
             });
+
+            // --- NEW: SEARCH HANDLER ---
+            const searchForm = document.getElementById('search-form');
+            if (searchForm) {
+                searchForm.addEventListener('submit', function(e) {
+                    e.preventDefault(); // Stop page reload
+
+                    const query = this.q.value;
+                    const loader = document.getElementById('loading-indicator');
+                    const emptyState = document.getElementById('empty-state');
+                    const tbody = document.getElementById('search-results-body');
+                    const statusMsg = document.getElementById('status-msg');
+
+                    // UI Updates
+                    loader.classList.remove('hidden');
+                    emptyState.classList.add('hidden');
+                    tbody.innerHTML = ''; // Clear old results
+                    statusMsg.innerHTML = `Searching for "<span class="text-white">${query}</span>"`;
+
+                    // AJAX Call
+                    fetch(`/api/ui/search?q=${encodeURIComponent(query)}`)
+                        .then(res => res.json())
+                        .then(data => {
+                            loader.classList.add('hidden');
+
+                            if (!data || data.length === 0) {
+                                emptyState.classList.remove('hidden');
+                                emptyState.querySelector('h3').innerText = "No results found";
+                                return;
+                            }
+
+                            // Render Rows
+                            data.forEach(peerResult => {
+                                if(!peerResult.files) return;
+
+                                peerResult.files.forEach(file => {
+                                    const tr = document.createElement('tr');
+                                    tr.innerHTML = `
+                                        <td class="font-medium text-slate-200">
+                                            <div class="flex items-center gap-3">
+                                                <i data-lucide="file" class="w-4 h-4 text-slate-500"></i>
+                                                ${file.name}
+                                            </div>
+                                        </td>
+                                        <td class="text-slate-400 font-mono text-xs">${formatSize(file.size)}</td>
+                                        <td class="text-slate-500 font-mono text-xs truncate max-w-[150px]" title="${peerResult.peer_id}">
+                                            ${peerResult.peer_id}
+                                        </td>
+                                        <td>
+                                            <button onclick="startRealDownload('${peerResult.peer_id}', '${file.name}', '${file.path}', '${file.size}')"
+                                                class="px-3 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-500 border border-emerald-500/30 rounded text-xs transition-colors">
+                                                Download
+                                            </button>
+                                        </td>
+                                    `;
+                                    tbody.appendChild(tr);
+                                });
+                            });
+                            lucide.createIcons();
+                        })
+                        .catch(err => {
+                            loader.classList.add('hidden');
+                            emptyState.classList.remove('hidden');
+                            emptyState.querySelector('h3').innerText = "Search Error: " + err;
+                        });
+                });
+            }
         });
 
-        // --- REAL BACKEND API LOGIC ---
+        // --- DOWNLOAD HANDLER ---
         function startRealDownload(peerId, fileName, path, sizeRaw) {
             setTab('monitor');
             const proxyUrl = `/api/download?peer=${encodeURIComponent(peerId)}&path=${encodeURIComponent(path)}&name=${encodeURIComponent(fileName)}`;
