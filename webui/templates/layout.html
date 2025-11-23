@@ -23,7 +23,13 @@
         .nav-tab.active { @apply text-emerald-400 border-emerald-500 bg-slate-800/50; }
         @keyframes pulse-ring { 0% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); } 70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); } 100% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); } }
         .status-dot { width: 8px; height: 8px; background-color: var(--accent-primary); border-radius: 50%; animation: pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite; }
-        .modern-input { @apply w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all placeholder-slate-500; }
+
+        /* UPDATED: Removed 'text-black' from @apply and added explicit CSS color property */
+        .modern-input {
+            @apply w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all placeholder-slate-500;
+            color: #000000 !important; /* Force black text */
+        }
+
         .modern-select { @apply w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 outline-none appearance-none cursor-pointer; background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%2394a3b8' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e"); background-position: right 0.5rem center; background-repeat: no-repeat; background-size: 1.5em 1.5em; }
     </style>
 </head>
@@ -44,19 +50,30 @@
     <script>
         lucide.createIcons();
 
+        // --- FIX: Clean Tab Switching ---
         function setTab(tabName) {
             const tabs = ['search', 'monitor', 'library'];
             tabs.forEach(t => {
                 const btn = document.getElementById(`tab-${t}`);
                 const view = document.getElementById(`view-${t}`);
+
+                // 1. IMPORTANT: Clear inline styles first!
+                view.style.display = '';
+
                 if (t === tabName) {
+                    // Active State
                     btn.classList.add('bg-emerald-500/10', 'text-emerald-500', 'border', 'border-emerald-500/20');
                     btn.classList.remove('text-slate-400', 'hover:text-white');
+
                     view.classList.remove('hidden');
+
+                    // Explicitly set flex for monitor to ensure layout holds
                     if(t === 'monitor') view.style.display = 'flex';
                 } else {
+                    // Inactive State
                     btn.classList.remove('bg-emerald-500/10', 'text-emerald-500', 'border', 'border-emerald-500/20');
                     btn.classList.add('text-slate-400', 'hover:text-white');
+
                     view.classList.add('hidden');
                 }
             });
