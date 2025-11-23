@@ -8,23 +8,25 @@ import (
 	"sync"
 	"time"
 
+	"onivex/filesystem" // Now importing filesystem for shared structs
+
 	"github.com/cretz/bine/tor"
 )
 
 // PeerManager handles the list of known neighbors
 type PeerManager struct {
-	mu         sync.RWMutex // Read-Write mutex for thread safety
+	mu         sync.RWMutex
 	KnownPeers map[string]bool
 	Tor        *tor.Tor
 }
 
 // SearchResult holds data returned from a remote peer
+// UPDATED: Now uses strict filesystem.FileMeta instead of raw JSON
 type SearchResult struct {
-	PeerID string            `json:"peer_id"`
-	Files  []json.RawMessage `json:"files"` // Raw JSON matches filesystem.FileMeta structure
+	PeerID string                `json:"peer_id"`
+	Files  []filesystem.FileMeta `json:"files"`
 }
 
-// NewPeerManager creates the address book
 func NewPeerManager(t *tor.Tor) *PeerManager {
 	return &PeerManager{
 		KnownPeers: make(map[string]bool),
@@ -32,7 +34,6 @@ func NewPeerManager(t *tor.Tor) *PeerManager {
 	}
 }
 
-// AddPeer adds a neighbor to memory safely
 func (pm *PeerManager) AddPeer(onionAddr string) {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
@@ -43,7 +44,6 @@ func (pm *PeerManager) AddPeer(onionAddr string) {
 	}
 }
 
-// GetPeers returns a slice of all known peer addresses (for the API)
 func (pm *PeerManager) GetPeers() []string {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
@@ -55,13 +55,11 @@ func (pm *PeerManager) GetPeers() []string {
 	return list
 }
 
-// Sync connects to a peer and asks "Who do you know?"
 func (pm *PeerManager) Sync(onionAddr string) {
 	fmt.Printf("📡 Syncing with %s...\n", onionAddr)
 
 	dialer, err := pm.Tor.Dialer(context.Background(), nil)
 	if err != nil {
-		fmt.Printf("❌ Dialer Error: %v\n", err)
 		return
 	}
 
@@ -70,17 +68,15 @@ func (pm *PeerManager) Sync(onionAddr string) {
 		Timeout:   30 * time.Second,
 	}
 
-	// Request their Peer List
 	resp, err := httpClient.Get("http://" + onionAddr + "/api/peers")
 	if err != nil {
-		fmt.Printf("❌ Sync Failed (Peer might be offline): %v\n", err)
+		fmt.Printf("❌ Sync Failed: %v\n", err)
 		return
 	}
 	defer resp.Body.Close()
 
 	var newPeers []string
 	if err := json.NewDecoder(resp.Body).Decode(&newPeers); err != nil {
-		fmt.Printf("❌ Invalid JSON from peer: %v\n", err)
 		return
 	}
 
@@ -92,14 +88,12 @@ func (pm *PeerManager) Sync(onionAddr string) {
 	fmt.Printf("✅ Sync Complete. Learned %d peers from %s\n", count, onionAddr)
 }
 
-// SearchNetwork asks all known peers for files matching 'query'
 func (pm *PeerManager) SearchNetwork(query string) []SearchResult {
 	peers := pm.GetPeers()
 	fmt.Printf("🔍 Searching %d peers for '%s'...\n", len(peers), query)
 
 	results := []SearchResult{}
 
-	// Sequential search for now (easier to debug logs)
 	for _, p := range peers {
 		dialer, err := pm.Tor.Dialer(context.Background(), nil)
 		if err != nil {
@@ -117,7 +111,8 @@ func (pm *PeerManager) SearchNetwork(query string) []SearchResult {
 			continue
 		}
 
-		var remoteFiles []json.RawMessage
+		// UPDATED: Decode directly into FileMeta slice
+		var remoteFiles []filesystem.FileMeta
 		if err := json.NewDecoder(resp.Body).Decode(&remoteFiles); err == nil {
 			if len(remoteFiles) > 0 {
 				results = append(results, SearchResult{
