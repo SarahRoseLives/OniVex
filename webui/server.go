@@ -13,11 +13,11 @@ import (
 	"time"
 
 	"onivex/discovery"
+	"onivex/filesystem"
 
 	"github.com/cretz/bine/tor"
 )
 
-// UIContext holds data to render in the HTML template
 type UIContext struct {
 	MyAddress   string
 	PeerCount   int
@@ -30,11 +30,8 @@ func Start(port int, myAddress string, pm *discovery.PeerManager, t *tor.Tor) {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	fmt.Printf("🖥️  Starting Web UI at http://%s\n", addr)
 
-	// 1. Main UI Handler (Renders the initial page structure)
+	// 1. Main Page
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// We no longer do the blocking SearchNetwork here.
-		// We just render the page with empty results initially.
-
 		peers := pm.GetPeers()
 		data := UIContext{
 			MyAddress:   myAddress,
@@ -46,19 +43,13 @@ func Start(port int, myAddress string, pm *discovery.PeerManager, t *tor.Tor) {
 
 		tmpl, err := template.ParseGlob("webui/templates/*.html")
 		if err != nil {
-			http.Error(w, "Could not load templates: "+err.Error(), 500)
+			http.Error(w, "Template Error: "+err.Error(), 500)
 			return
 		}
-
-		err = tmpl.ExecuteTemplate(w, "layout.html", data)
-		if err != nil {
-			log.Printf("Template Error: %v", err)
-		}
+		tmpl.ExecuteTemplate(w, "layout.html", data)
 	})
 
-	// 2. AJAX Search Endpoint (NEW)
-	// This is called by JavaScript. It blocks, but only the HTTP request blocks,
-	// not the user's browser UI.
+	// 2. AJAX Search Endpoint
 	http.HandleFunc("/api/ui/search", func(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query().Get("q")
 		if query == "" {
@@ -66,28 +57,43 @@ func Start(port int, myAddress string, pm *discovery.PeerManager, t *tor.Tor) {
 			return
 		}
 
-		// Perform the slow network search
-		results := pm.SearchNetwork(query)
+		// A. Search Local Filesystem (INSTANT)
+		localFiles := filesystem.SearchLocal(query)
+
+		// B. Search Network (SLOW) - Pass myAddress to exclude self from Tor search
+		networkResults := pm.SearchNetwork(query, myAddress)
+
+		// C. Combine
+		finalResults := []discovery.SearchResult{}
+
+		if len(localFiles) > 0 {
+			finalResults = append(finalResults, discovery.SearchResult{
+				PeerID: myAddress,
+				Files:  localFiles,
+				Source: "local",
+			})
+		}
+		finalResults = append(finalResults, networkResults...)
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(results)
+		json.NewEncoder(w).Encode(finalResults)
 	})
 
-	// 3. Download Proxy Handler
+	// 3. Download Proxy
 	http.HandleFunc("/api/download", func(w http.ResponseWriter, r *http.Request) {
 		peerID := r.URL.Query().Get("peer")
 		filePath := r.URL.Query().Get("path")
 		fileName := r.URL.Query().Get("name")
 
 		if peerID == "" || filePath == "" {
-			http.Error(w, "Missing peer or path", http.StatusBadRequest)
+			http.Error(w, "Missing params", 400)
 			return
 		}
 
 		localPath := filepath.Join("downloads", fileName)
 		outFile, err := os.Create(localPath)
 		if err != nil {
-			http.Error(w, "Failed to create local file", http.StatusInternalServerError)
+			http.Error(w, "Create file failed", 500)
 			return
 		}
 		defer outFile.Close()
@@ -106,7 +112,7 @@ func Start(port int, myAddress string, pm *discovery.PeerManager, t *tor.Tor) {
 			defer sourceFile.Close()
 			bytesWritten, err = io.Copy(outFile, sourceFile)
 		} else {
-			// Remote Download via Tor
+			// Tor Download
 			fmt.Printf("📥 Tor Download: %s from %s\n", fileName, peerID)
 			dialer, err := t.Dialer(context.Background(), nil)
 			if err != nil {
@@ -117,8 +123,7 @@ func Start(port int, myAddress string, pm *discovery.PeerManager, t *tor.Tor) {
 				Transport: &http.Transport{DialContext: dialer.DialContext},
 				Timeout:   10 * time.Minute,
 			}
-			targetURL := fmt.Sprintf("http://%s%s", peerID, filePath)
-			resp, err := torClient.Get(targetURL)
+			resp, err := torClient.Get(fmt.Sprintf("http://%s%s", peerID, filePath))
 			if err != nil {
 				http.Error(w, "Connection failed", 502)
 				return
