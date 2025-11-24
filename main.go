@@ -15,16 +15,11 @@ import (
 )
 
 func main() {
-	// Command line flag for port (default 8080)
 	port := flag.Int("port", 8080, "Web UI Port")
 	flag.Parse()
 
-	// 1. Setup Directories
 	filesystem.EnsureDirectories()
 
-	// 2. Setup Tor Network (PERSISTENT MODE)
-	// Changed from "" to "client_identity".
-	// This triggers the logic to save/load the key from disk.
 	t, onion, err := network.SetupTor("client_identity")
 	if err != nil {
 		log.Fatalf("Fatal Network Error: %v", err)
@@ -34,21 +29,16 @@ func main() {
 
 	myAddress := fmt.Sprintf("%v.onion", onion.ID)
 
-	// 3. Initialize Discovery
 	peers := discovery.NewPeerManager(t)
 	peers.AddPeer(myAddress)
-
-	// Autosave peers.json every 5 minutes
 	peers.StartPersistence(5 * time.Minute)
 
-	// 4. Start Local Web UI
 	go webui.Start(*port, myAddress, peers, t)
 
 	fmt.Printf("\n✨ ONIVEX CLIENT LIVE\n")
 	fmt.Printf("👉 Tor Access: http://%s\n", myAddress)
 	fmt.Printf("👉 Control UI: http://127.0.0.1:%d\n\n", *port)
 
-	// 5. Setup Tor HTTP Routes
 	mux := http.NewServeMux()
 	mux.Handle("/", filesystem.GetFileHandler())
 
@@ -56,6 +46,7 @@ func main() {
 		w.Write([]byte("OniVex Online"))
 	})
 
+	// UPDATED: Return Random Subset
 	mux.HandleFunc("/api/peers", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			var payload map[string]string
@@ -66,7 +57,9 @@ func main() {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(peers.GetPeers())
+
+		// Return 50 random peers to facilitate gossip without huge payloads
+		json.NewEncoder(w).Encode(peers.GetRandomPeers(50))
 	})
 
 	mux.HandleFunc("/api/index", func(w http.ResponseWriter, r *http.Request) {
@@ -82,17 +75,15 @@ func main() {
 		json.NewEncoder(w).Encode(results)
 	})
 
-	// 6. Heartbeat Loop
 	go func() {
 		fmt.Println("⏳ Waiting for Tor circuit stability (15s)...")
 		time.Sleep(15 * time.Second)
 		for {
-			// fmt.Println("💓 Heartbeat & Index Sync...")
+			// fmt.Println("💓 Heartbeat & Gossip...")
 			peers.Bootstrap(myAddress)
 			time.Sleep(15 * time.Minute)
 		}
 	}()
 
-	// 7. Block Main Thread
 	log.Fatal(http.Serve(onion, mux))
 }

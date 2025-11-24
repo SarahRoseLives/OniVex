@@ -83,6 +83,25 @@ func (pm *PeerManager) GetPeers() []string {
 	return list
 }
 
+// NEW: GetRandomPeers returns a random subset of peers
+// This prevents the JSON response from becoming massive as the network grows.
+func (pm *PeerManager) GetRandomPeers(limit int) []string {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	list := []string{}
+	// Map iteration in Go is random by design, so we can just iterate and stop.
+	for p := range pm.KnownPeers {
+		list = append(list, p)
+		if len(list) >= limit {
+			break
+		}
+	}
+	return list
+}
+
+// --- PERSISTENCE ---
+
 func (pm *PeerManager) LoadPeers() {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
@@ -131,20 +150,27 @@ func (pm *PeerManager) StartCleanup(interval time.Duration, peerTimeout time.Dur
 // --- NETWORK ---
 
 func (pm *PeerManager) Bootstrap(myOnionAddr string) {
+	// 1. Sync with Seeds (Reliable Entry)
 	if len(BootstrapPeers) > 0 {
 		for _, seed := range BootstrapPeers {
 			if seed != myOnionAddr { go pm.Sync(seed, myOnionAddr) }
 		}
 	}
-	pm.mu.RLock()
-	candidates := make([]string, 0, len(pm.KnownPeers))
-	for p := range pm.KnownPeers { candidates = append(candidates, p) }
-	pm.mu.RUnlock()
 
-	limit := 5
-	for i, peer := range candidates {
-		if i >= limit { break }
-		if peer != myOnionAddr { go pm.Sync(peer, myOnionAddr) }
+	// 2. Gossip with Random Known Peers (Propagation)
+	// This spreads the "Phonebook" virally
+	randoms := pm.GetRandomPeers(5) // Pick 5 random friends
+	for _, peer := range randoms {
+		if peer != myOnionAddr {
+			// Don't sync with seeds again here, we already did
+			isSeed := false
+			for _, s := range BootstrapPeers {
+				if s == peer { isSeed = true; break }
+			}
+			if !isSeed {
+				go pm.Sync(peer, myOnionAddr)
+			}
+		}
 	}
 }
 
@@ -157,6 +183,7 @@ func (pm *PeerManager) Sync(targetPeer string, myAddr string) {
 		Timeout:   30 * time.Second,
 	}
 
+	// Exchange Addresses
 	payload := map[string]string{"addr": myAddr}
 	jsonPayload, _ := json.Marshal(payload)
 
@@ -171,6 +198,7 @@ func (pm *PeerManager) Sync(targetPeer string, myAddr string) {
 		resp.Body.Close()
 	}
 
+	// Fetch Index (Background Indexing)
 	resp, err = client.Get("http://" + targetPeer + "/api/index")
 	if err == nil {
 		var files []filesystem.FileMeta
@@ -181,7 +209,6 @@ func (pm *PeerManager) Sync(targetPeer string, myAddr string) {
 	}
 }
 
-// SearchNetwork performs the Parallel Search
 func (pm *PeerManager) SearchNetwork(query string, myAddr string) []SearchResult {
 	peers := pm.GetPeers()
 	fmt.Printf("🔍 Searching %d peers for '%s'...\n", len(peers), query)
@@ -190,7 +217,7 @@ func (pm *PeerManager) SearchNetwork(query string, myAddr string) []SearchResult
 	var mu sync.Mutex
 	query = strings.ToLower(query)
 
-	// 1. Local Cache
+	// 1. Local Cache (Skip self)
 	pm.mu.RLock()
 	for peerID, info := range pm.KnownPeers {
 		if peerID == myAddr { continue }
@@ -233,25 +260,15 @@ func (pm *PeerManager) SearchNetwork(query string, myAddr string) []SearchResult
 
 			client := &http.Client{
 				Transport: &http.Transport{DialContext: dialer.DialContext},
-				// UPDATED: Increased timeout to 20s for initial connection
-				Timeout:   20 * time.Second,
+				Timeout:   4 * time.Second, // Fail Fast
 			}
 
-			url := fmt.Sprintf("http://%s/api/search?q=%s", peerID, query)
-			// DEBUG PRINT
-			fmt.Printf("   ➡ Dialing %s...\n", peerID)
-
-			resp, err := client.Get(url)
-			if err != nil {
-				// DEBUG PRINT ERROR
-				fmt.Printf("   ❌ Failed %s: %v\n", peerID, err)
-				return
-			}
+			resp, err := client.Get(fmt.Sprintf("http://%s/api/search?q=%s", peerID, query))
+			if err != nil { return }
 			defer resp.Body.Close()
 
 			var remoteFiles []filesystem.FileMeta
 			if err := json.NewDecoder(resp.Body).Decode(&remoteFiles); err == nil && len(remoteFiles) > 0 {
-				fmt.Printf("   ✅ Found %d files on %s\n", len(remoteFiles), peerID)
 				mu.Lock()
 				results = append(results, SearchResult{
 					PeerID: peerID,
@@ -260,8 +277,6 @@ func (pm *PeerManager) SearchNetwork(query string, myAddr string) []SearchResult
 				})
 				mu.Unlock()
 				pm.UpdatePeerIndex(peerID, remoteFiles)
-			} else {
-				fmt.Printf("   ⚪ No matches on %s\n", peerID)
 			}
 		}(p)
 	}

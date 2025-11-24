@@ -46,7 +46,8 @@ func main() {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(peers.GetPeers())
+		// Return larger subset for seeds (200)
+		json.NewEncoder(w).Encode(peers.GetRandomPeers(200))
 	})
 
 	mux.HandleFunc("/api/index", func(w http.ResponseWriter, r *http.Request) {
@@ -54,8 +55,6 @@ func main() {
 		w.Write([]byte("[]"))
 	})
 
-	// --- NEW: Safety endpoint ---
-	// If a client accidentally tries to search the seed, return empty instantly
 	mux.HandleFunc("/api/search", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte("[]"))
