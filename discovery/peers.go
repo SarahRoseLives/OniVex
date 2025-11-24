@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -37,6 +38,10 @@ func (pm *PeerManager) AddPeer(onionAddr string) {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
+	if onionAddr == "" {
+		return
+	}
+
 	if !pm.KnownPeers[onionAddr] {
 		pm.KnownPeers[onionAddr] = true
 		fmt.Printf("🔭 New Peer Discovered: %s\n", onionAddr)
@@ -54,22 +59,27 @@ func (pm *PeerManager) GetPeers() []string {
 	return list
 }
 
-// Bootstrap connects to the hardcoded seed nodes to populate the initial peer list
-func (pm *PeerManager) Bootstrap() {
+// Bootstrap connects to the hardcoded seed nodes
+// UPDATED: Requires myOnionAddr so we can tell the seed who we are
+func (pm *PeerManager) Bootstrap(myOnionAddr string) {
 	if len(BootstrapPeers) == 0 {
-		fmt.Println("⚠️ No bootstrap peers configured. Waiting for manual discovery.")
+		fmt.Println("⚠️ No bootstrap peers configured.")
 		return
 	}
 
 	fmt.Println("🌍 Bootstrapping network connection...")
 	for _, seed := range BootstrapPeers {
-		// Sync with seed nodes in parallel
-		go pm.Sync(seed)
+		// Don't sync with ourselves if we are the seed
+		if seed != myOnionAddr {
+			go pm.Sync(seed, myOnionAddr)
+		}
 	}
 }
 
-func (pm *PeerManager) Sync(onionAddr string) {
-	fmt.Printf("📡 Syncing with %s...\n", onionAddr)
+// Sync connects to a target and exchanges peer lists
+// UPDATED: Sends a POST request with 'myAddr' to announce existence
+func (pm *PeerManager) Sync(targetPeer string, myAddr string) {
+	fmt.Printf("📡 Syncing with %s...\n", targetPeer)
 
 	dialer, err := pm.Tor.Dialer(context.Background(), nil)
 	if err != nil {
@@ -81,13 +91,24 @@ func (pm *PeerManager) Sync(onionAddr string) {
 		Timeout:   30 * time.Second,
 	}
 
-	resp, err := httpClient.Get("http://" + onionAddr + "/api/peers")
+	// 1. Prepare Payload (Me)
+	payload := map[string]string{"addr": myAddr}
+	jsonData, _ := json.Marshal(payload)
+
+	// 2. POST to the peer (Announce myself + Get their list)
+	resp, err := httpClient.Post(
+		"http://"+targetPeer+"/api/peers",
+		"application/json",
+		bytes.NewBuffer(jsonData),
+	)
+
 	if err != nil {
-		fmt.Printf("❌ Sync Failed: %v\n", err)
+		fmt.Printf("❌ Sync Failed with %s: %v\n", targetPeer, err)
 		return
 	}
 	defer resp.Body.Close()
 
+	// 3. Decode their list of peers
 	var newPeers []string
 	if err := json.NewDecoder(resp.Body).Decode(&newPeers); err != nil {
 		return
@@ -95,10 +116,13 @@ func (pm *PeerManager) Sync(onionAddr string) {
 
 	count := 0
 	for _, p := range newPeers {
-		pm.AddPeer(p)
-		count++
+		// Don't add ourselves if the seed sends it back
+		if p != myAddr {
+			pm.AddPeer(p)
+			count++
+		}
 	}
-	fmt.Printf("✅ Sync Complete. Learned %d peers from %s\n", count, onionAddr)
+	fmt.Printf("✅ Sync Complete. Learned %d peers from %s\n", count, targetPeer)
 }
 
 func (pm *PeerManager) SearchNetwork(query string) []SearchResult {

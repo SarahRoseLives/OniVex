@@ -14,7 +14,6 @@ import (
 func main() {
 	fmt.Println("🌳 STARTING ONIVEX SEED NODE 🌳")
 
-	// 1. Setup Tor with a persistent key name "seed_identity"
 	t, onion, err := network.SetupTor("seed_identity")
 	if err != nil {
 		log.Fatalf("Fatal Network Error: %v", err)
@@ -25,27 +24,35 @@ func main() {
 	myAddress := fmt.Sprintf("%v.onion", onion.ID)
 	fmt.Printf("\n⭐ SEED ADDRESS (Copy to discovery/bootstrap.go): \n   %s\n\n", myAddress)
 
-	// 2. Initialize Peer Manager (Self-aware)
 	peers := discovery.NewPeerManager(t)
 	peers.AddPeer(myAddress)
 
-	// 3. HTTP Routes for the Seed
 	mux := http.NewServeMux()
 
-	// Health Check
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("OniVex Seed Node Active"))
 	})
 
-	// Peer Discovery API
+	// UPDATED: Handle POST to register new peers
 	mux.HandleFunc("/api/peers", func(w http.ResponseWriter, r *http.Request) {
+
+		// 1. If it's a POST, they are announcing themselves
+		if r.Method == http.MethodPost {
+			var payload map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&payload); err == nil {
+				addr := payload["addr"]
+				if addr != "" {
+					fmt.Printf("👋 New Client Announced: %s\n", addr)
+					peers.AddPeer(addr)
+				}
+			}
+		}
+
+		// 2. Always return the current list of peers
 		w.Header().Set("Content-Type", "application/json")
-		// In a production seed, we would capture the requester's IP/Onion here
-		// and add them to our list. For now, we serve what we know.
 		json.NewEncoder(w).Encode(peers.GetPeers())
 	})
 
-	// 4. Heartbeat Loop
 	go func() {
 		for {
 			time.Sleep(1 * time.Hour)
@@ -53,6 +60,5 @@ func main() {
 		}
 	}()
 
-	// 5. Serve
 	log.Fatal(http.Serve(onion, mux))
 }
