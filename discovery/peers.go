@@ -17,11 +17,11 @@ import (
 // PeerManager handles the list of known neighbors
 type PeerManager struct {
 	mu         sync.RWMutex
-	KnownPeers map[string]bool
+	// UPDATED: Map now stores Last Seen Timestamp
+	KnownPeers map[string]time.Time
 	Tor        *tor.Tor
 }
 
-// SearchResult holds data returned from a remote peer
 type SearchResult struct {
 	PeerID string                `json:"peer_id"`
 	Files  []filesystem.FileMeta `json:"files"`
@@ -29,11 +29,12 @@ type SearchResult struct {
 
 func NewPeerManager(t *tor.Tor) *PeerManager {
 	return &PeerManager{
-		KnownPeers: make(map[string]bool),
+		KnownPeers: make(map[string]time.Time),
 		Tor:        t,
 	}
 }
 
+// AddPeer updates the last-seen timestamp for a peer
 func (pm *PeerManager) AddPeer(onionAddr string) {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
@@ -42,10 +43,13 @@ func (pm *PeerManager) AddPeer(onionAddr string) {
 		return
 	}
 
-	if !pm.KnownPeers[onionAddr] {
-		pm.KnownPeers[onionAddr] = true
+	// If new, log it
+	if _, exists := pm.KnownPeers[onionAddr]; !exists {
 		fmt.Printf("🔭 New Peer Discovered: %s\n", onionAddr)
 	}
+
+	// Update timestamp to NOW
+	pm.KnownPeers[onionAddr] = time.Now()
 }
 
 func (pm *PeerManager) GetPeers() []string {
@@ -59,8 +63,31 @@ func (pm *PeerManager) GetPeers() []string {
 	return list
 }
 
-// Bootstrap connects to the hardcoded seed nodes
-// UPDATED: Requires myOnionAddr so we can tell the seed who we are
+// StartCleanup runs a background loop to remove dead peers
+// Call this in your main.go
+func (pm *PeerManager) StartCleanup(interval time.Duration, peerTimeout time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		for range ticker.C {
+			pm.mu.Lock()
+			now := time.Now()
+			count := 0
+			for peer, lastSeen := range pm.KnownPeers {
+				if now.Sub(lastSeen) > peerTimeout {
+					delete(pm.KnownPeers, peer)
+					count++
+					fmt.Printf("💀 Pruning dead peer: %s\n", peer)
+				}
+			}
+			pm.mu.Unlock()
+
+			if count > 0 {
+				fmt.Printf("🧹 Cleanup: Removed %d inactive peers\n", count)
+			}
+		}
+	}()
+}
+
 func (pm *PeerManager) Bootstrap(myOnionAddr string) {
 	if len(BootstrapPeers) == 0 {
 		fmt.Println("⚠️ No bootstrap peers configured.")
@@ -69,16 +96,15 @@ func (pm *PeerManager) Bootstrap(myOnionAddr string) {
 
 	fmt.Println("🌍 Bootstrapping network connection...")
 	for _, seed := range BootstrapPeers {
-		// Don't sync with ourselves if we are the seed
 		if seed != myOnionAddr {
 			go pm.Sync(seed, myOnionAddr)
 		}
 	}
 }
 
-// Sync connects to a target and exchanges peer lists
-// UPDATED: Sends a POST request with 'myAddr' to announce existence
 func (pm *PeerManager) Sync(targetPeer string, myAddr string) {
+	// (Sync code remains exactly the same as previous step)
+	// ...
 	fmt.Printf("📡 Syncing with %s...\n", targetPeer)
 
 	dialer, err := pm.Tor.Dialer(context.Background(), nil)
@@ -91,11 +117,9 @@ func (pm *PeerManager) Sync(targetPeer string, myAddr string) {
 		Timeout:   30 * time.Second,
 	}
 
-	// 1. Prepare Payload (Me)
 	payload := map[string]string{"addr": myAddr}
 	jsonData, _ := json.Marshal(payload)
 
-	// 2. POST to the peer (Announce myself + Get their list)
 	resp, err := httpClient.Post(
 		"http://"+targetPeer+"/api/peers",
 		"application/json",
@@ -103,12 +127,11 @@ func (pm *PeerManager) Sync(targetPeer string, myAddr string) {
 	)
 
 	if err != nil {
-		fmt.Printf("❌ Sync Failed with %s: %v\n", targetPeer, err)
+		// fmt.Printf("❌ Sync Failed with %s: %v\n", targetPeer, err)
 		return
 	}
 	defer resp.Body.Close()
 
-	// 3. Decode their list of peers
 	var newPeers []string
 	if err := json.NewDecoder(resp.Body).Decode(&newPeers); err != nil {
 		return
@@ -116,13 +139,12 @@ func (pm *PeerManager) Sync(targetPeer string, myAddr string) {
 
 	count := 0
 	for _, p := range newPeers {
-		// Don't add ourselves if the seed sends it back
 		if p != myAddr {
 			pm.AddPeer(p)
 			count++
 		}
 	}
-	fmt.Printf("✅ Sync Complete. Learned %d peers from %s\n", count, targetPeer)
+	// fmt.Printf("✅ Sync Complete. Learned %d peers from %s\n", count, targetPeer)
 }
 
 func (pm *PeerManager) SearchNetwork(query string) []SearchResult {
@@ -144,7 +166,7 @@ func (pm *PeerManager) SearchNetwork(query string) []SearchResult {
 		url := fmt.Sprintf("http://%s/api/search?q=%s", p, query)
 		resp, err := client.Get(url)
 		if err != nil {
-			fmt.Printf("⚠️ Peer %s failed: %v\n", p, err)
+			// fmt.Printf("⚠️ Peer %s failed: %v\n", p, err)
 			continue
 		}
 
