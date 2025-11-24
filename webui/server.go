@@ -30,7 +30,6 @@ func Start(port int, myAddress string, pm *discovery.PeerManager, t *tor.Tor) {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	fmt.Printf("🖥️  Starting Web UI at http://%s\n", addr)
 
-	// 1. Main Page
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		peers := pm.GetPeers()
 		data := UIContext{
@@ -49,7 +48,6 @@ func Start(port int, myAddress string, pm *discovery.PeerManager, t *tor.Tor) {
 		tmpl.ExecuteTemplate(w, "layout.html", data)
 	})
 
-	// 2. AJAX Search Endpoint
 	http.HandleFunc("/api/ui/search", func(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query().Get("q")
 		if query == "" {
@@ -57,15 +55,13 @@ func Start(port int, myAddress string, pm *discovery.PeerManager, t *tor.Tor) {
 			return
 		}
 
-		// A. Search Local Filesystem (INSTANT)
+		// A. Local
 		localFiles := filesystem.SearchLocal(query)
 
-		// B. Search Network (SLOW) - Pass myAddress to exclude self from Tor search
+		// B. Network (With logging in console)
 		networkResults := pm.SearchNetwork(query, myAddress)
 
-		// C. Combine
 		finalResults := []discovery.SearchResult{}
-
 		if len(localFiles) > 0 {
 			finalResults = append(finalResults, discovery.SearchResult{
 				PeerID: myAddress,
@@ -79,7 +75,7 @@ func Start(port int, myAddress string, pm *discovery.PeerManager, t *tor.Tor) {
 		json.NewEncoder(w).Encode(finalResults)
 	})
 
-	// 3. Download Proxy
+	// 3. Download Handler (Robust)
 	http.HandleFunc("/api/download", func(w http.ResponseWriter, r *http.Request) {
 		peerID := r.URL.Query().Get("peer")
 		filePath := r.URL.Query().Get("path")
@@ -101,7 +97,7 @@ func Start(port int, myAddress string, pm *discovery.PeerManager, t *tor.Tor) {
 		var bytesWritten int64
 
 		if peerID == myAddress {
-			// Local Copy
+			// Local
 			fmt.Printf("📂 Local Download: %s\n", fileName)
 			sourcePath := filepath.Join("uploads", filePath)
 			sourceFile, err := os.Open(sourcePath)
@@ -112,24 +108,44 @@ func Start(port int, myAddress string, pm *discovery.PeerManager, t *tor.Tor) {
 			defer sourceFile.Close()
 			bytesWritten, err = io.Copy(outFile, sourceFile)
 		} else {
-			// Tor Download
+			// Network (With Timeouts)
 			fmt.Printf("📥 Tor Download: %s from %s\n", fileName, peerID)
-			dialer, err := t.Dialer(context.Background(), nil)
+
+			// FIX: Add Timeout to Dialer Context
+			dialCtx, dialCancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer dialCancel()
+
+			dialer, err := t.Dialer(dialCtx, nil)
 			if err != nil {
+				fmt.Printf("   ❌ Dialer Error: %v\n", err)
 				http.Error(w, "Tor dialer failed", 500)
 				return
 			}
+
 			torClient := &http.Client{
 				Transport: &http.Transport{DialContext: dialer.DialContext},
-				Timeout:   10 * time.Minute,
+				Timeout:   15 * time.Minute, // Long timeout for transfer
 			}
+
 			resp, err := torClient.Get(fmt.Sprintf("http://%s%s", peerID, filePath))
 			if err != nil {
+				fmt.Printf("   ❌ Request Failed: %v\n", err)
 				http.Error(w, "Connection failed", 502)
 				return
 			}
 			defer resp.Body.Close()
+
+			if resp.StatusCode != 200 {
+				fmt.Printf("   ❌ Peer Error: %d\n", resp.StatusCode)
+				http.Error(w, "Peer returned error", resp.StatusCode)
+				return
+			}
+
+			fmt.Printf("   ✅ Connected! Downloading...\n")
 			bytesWritten, err = io.Copy(outFile, resp.Body)
+			if err != nil {
+				fmt.Printf("   ❌ Stream Error: %v\n", err)
+			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")

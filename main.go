@@ -8,11 +8,23 @@ import (
 	"net/http"
 	"time"
 
+	"onivex/bloom"
 	"onivex/discovery"
 	"onivex/filesystem"
 	"onivex/network"
 	"onivex/webui"
 )
+
+// Wrapper to log file access requests
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Only log actual file requests (ignore /api calls which are logged elsewhere)
+		if len(r.URL.Path) > 1 && r.URL.Path[0:4] != "/api" {
+			fmt.Printf("📂 Serving File: %s to %s\n", r.URL.Path, r.RemoteAddr)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 func main() {
 	port := flag.Int("port", 8080, "Web UI Port")
@@ -40,13 +52,15 @@ func main() {
 	fmt.Printf("👉 Control UI: http://127.0.0.1:%d\n\n", *port)
 
 	mux := http.NewServeMux()
-	mux.Handle("/", filesystem.GetFileHandler())
+
+	// UPDATED: Wrap the file handler with logging
+	fileHandler := filesystem.GetFileHandler()
+	mux.Handle("/", loggingMiddleware(fileHandler))
 
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("OniVex Online"))
 	})
 
-	// UPDATED: Return Random Subset
 	mux.HandleFunc("/api/peers", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			var payload map[string]string
@@ -57,9 +71,25 @@ func main() {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-
-		// Return 50 random peers to facilitate gossip without huge payloads
 		json.NewEncoder(w).Encode(peers.GetRandomPeers(50))
+	})
+
+	mux.HandleFunc("/api/filter", func(w http.ResponseWriter, r *http.Request) {
+		files, _ := filesystem.GetFileList()
+		filter := bloom.New(1000, 0.01)
+		for _, f := range files {
+			filter.Add([]byte(f.Name))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(filter)
+	})
+
+	mux.HandleFunc("/api/query", func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query().Get("q")
+		results := filesystem.SearchLocal(query)
+		if len(results) > 0 {
+			fmt.Printf("💡 Found match for forwarded query '%s'\n", query)
+		}
 	})
 
 	mux.HandleFunc("/api/index", func(w http.ResponseWriter, r *http.Request) {
@@ -79,7 +109,6 @@ func main() {
 		fmt.Println("⏳ Waiting for Tor circuit stability (15s)...")
 		time.Sleep(15 * time.Second)
 		for {
-			// fmt.Println("💓 Heartbeat & Gossip...")
 			peers.Bootstrap(myAddress)
 			time.Sleep(15 * time.Minute)
 		}

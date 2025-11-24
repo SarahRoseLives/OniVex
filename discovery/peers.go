@@ -12,14 +12,15 @@ import (
 	"sync"
 	"time"
 
+	"onivex/bloom"
 	"onivex/filesystem"
 
 	"github.com/cretz/bine/tor"
 )
 
 type PeerInfo struct {
-	LastSeen time.Time             `json:"last_seen"`
-	Files    []filesystem.FileMeta `json:"files"`
+	LastSeen time.Time     `json:"last_seen"`
+	Filter   *bloom.Filter `json:"filter"`
 }
 
 type PeerManager struct {
@@ -57,17 +58,17 @@ func (pm *PeerManager) AddPeer(onionAddr string) {
 	info, exists := pm.KnownPeers[onionAddr]
 	if !exists {
 		fmt.Printf("🔭 New Peer Discovered: %s\n", onionAddr)
-		info = PeerInfo{Files: []filesystem.FileMeta{}}
+		info = PeerInfo{}
 	}
 	info.LastSeen = time.Now()
 	pm.KnownPeers[onionAddr] = info
 }
 
-func (pm *PeerManager) UpdatePeerIndex(onionAddr string, files []filesystem.FileMeta) {
+func (pm *PeerManager) UpdatePeerFilter(onionAddr string, filter *bloom.Filter) {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 	if info, exists := pm.KnownPeers[onionAddr]; exists {
-		info.Files = files
+		info.Filter = filter
 		info.LastSeen = time.Now()
 		pm.KnownPeers[onionAddr] = info
 	}
@@ -83,14 +84,10 @@ func (pm *PeerManager) GetPeers() []string {
 	return list
 }
 
-// NEW: GetRandomPeers returns a random subset of peers
-// This prevents the JSON response from becoming massive as the network grows.
 func (pm *PeerManager) GetRandomPeers(limit int) []string {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
-
 	list := []string{}
-	// Map iteration in Go is random by design, so we can just iterate and stop.
 	for p := range pm.KnownPeers {
 		list = append(list, p)
 		if len(list) >= limit {
@@ -99,8 +96,6 @@ func (pm *PeerManager) GetRandomPeers(limit int) []string {
 	}
 	return list
 }
-
-// --- PERSISTENCE ---
 
 func (pm *PeerManager) LoadPeers() {
 	pm.mu.Lock()
@@ -147,35 +142,30 @@ func (pm *PeerManager) StartCleanup(interval time.Duration, peerTimeout time.Dur
 	}()
 }
 
-// --- NETWORK ---
-
 func (pm *PeerManager) Bootstrap(myOnionAddr string) {
-	// 1. Sync with Seeds (Reliable Entry)
 	if len(BootstrapPeers) > 0 {
 		for _, seed := range BootstrapPeers {
 			if seed != myOnionAddr { go pm.Sync(seed, myOnionAddr) }
 		}
 	}
+	pm.mu.RLock()
+	candidates := make([]string, 0, len(pm.KnownPeers))
+	for p := range pm.KnownPeers { candidates = append(candidates, p) }
+	pm.mu.RUnlock()
 
-	// 2. Gossip with Random Known Peers (Propagation)
-	// This spreads the "Phonebook" virally
-	randoms := pm.GetRandomPeers(5) // Pick 5 random friends
-	for _, peer := range randoms {
-		if peer != myOnionAddr {
-			// Don't sync with seeds again here, we already did
-			isSeed := false
-			for _, s := range BootstrapPeers {
-				if s == peer { isSeed = true; break }
-			}
-			if !isSeed {
-				go pm.Sync(peer, myOnionAddr)
-			}
-		}
+	limit := 5
+	for i, peer := range candidates {
+		if i >= limit { break }
+		if peer != myOnionAddr { go pm.Sync(peer, myOnionAddr) }
 	}
 }
 
 func (pm *PeerManager) Sync(targetPeer string, myAddr string) {
-	dialer, err := pm.Tor.Dialer(context.Background(), nil)
+	// Use context timeout for the Dialer to prevent hanging on dead seeds
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer dialCancel()
+
+	dialer, err := pm.Tor.Dialer(dialCtx, nil)
 	if err != nil { return }
 
 	client := &http.Client{
@@ -183,7 +173,6 @@ func (pm *PeerManager) Sync(targetPeer string, myAddr string) {
 		Timeout:   30 * time.Second,
 	}
 
-	// Exchange Addresses
 	payload := map[string]string{"addr": myAddr}
 	jsonPayload, _ := json.Marshal(payload)
 
@@ -198,14 +187,35 @@ func (pm *PeerManager) Sync(targetPeer string, myAddr string) {
 		resp.Body.Close()
 	}
 
-	// Fetch Index (Background Indexing)
-	resp, err = client.Get("http://" + targetPeer + "/api/index")
+	resp, err = client.Get("http://" + targetPeer + "/api/filter")
 	if err == nil {
-		var files []filesystem.FileMeta
-		if json.NewDecoder(resp.Body).Decode(&files) == nil {
-			if len(files) > 0 { pm.UpdatePeerIndex(targetPeer, files) }
+		var filter bloom.Filter
+		if json.NewDecoder(resp.Body).Decode(&filter) == nil {
+			pm.UpdatePeerFilter(targetPeer, &filter)
 		}
 		resp.Body.Close()
+	}
+}
+
+func (pm *PeerManager) ForwardSearch(query string, ttl int, originAddr string) {
+	if ttl <= 0 { return }
+	peers := pm.GetRandomPeers(3)
+	for _, p := range peers {
+		if p == originAddr { continue }
+		go func(peerID string) {
+			dialCtx, dialCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer dialCancel()
+
+			dialer, err := pm.Tor.Dialer(dialCtx, nil)
+			if err != nil { return }
+
+			client := &http.Client{
+				Transport: &http.Transport{DialContext: dialer.DialContext},
+				Timeout:   10 * time.Second,
+			}
+			url := fmt.Sprintf("http://%s/api/query?q=%s&ttl=%d&origin=%s", peerID, query, ttl-1, originAddr)
+			client.Get(url)
+		}(p)
 	}
 }
 
@@ -217,27 +227,23 @@ func (pm *PeerManager) SearchNetwork(query string, myAddr string) []SearchResult
 	var mu sync.Mutex
 	query = strings.ToLower(query)
 
-	// 1. Local Cache (Skip self)
+	// 1. Bloom Filter (Local Check)
 	pm.mu.RLock()
+	candidates := []string{}
 	for peerID, info := range pm.KnownPeers {
 		if peerID == myAddr { continue }
-		var matches []filesystem.FileMeta
-		for _, f := range info.Files {
-			if strings.Contains(strings.ToLower(f.Name), query) {
-				matches = append(matches, f)
+		if info.Filter != nil {
+			if info.Filter.Test([]byte(query)) {
+				candidates = append(candidates, peerID)
 			}
-		}
-		if len(matches) > 0 {
-			results = append(results, SearchResult{
-				PeerID: peerID,
-				Files:  matches,
-				Source: "cache",
-			})
+		} else {
+			// If no filter, check blindly
+			candidates = append(candidates, peerID)
 		}
 	}
 	pm.mu.RUnlock()
 
-	// 2. Live Network Search
+	// 2. Parallel Network Search
 	maxWorkers := 10
 	sem := make(chan struct{}, maxWorkers)
 	var wg sync.WaitGroup
@@ -245,9 +251,15 @@ func (pm *PeerManager) SearchNetwork(query string, myAddr string) []SearchResult
 	isSeed := make(map[string]bool)
 	for _, s := range BootstrapPeers { isSeed[s] = true }
 
-	for _, p := range peers {
-		if p == myAddr { continue }
-		if isSeed[p] { continue }
+	for _, p := range candidates {
+		if p == myAddr {
+			fmt.Printf("   ➡ Skipping Self: %s\n", p)
+			continue
+		}
+		if isSeed[p] {
+			fmt.Printf("   ➡ Skipping Seed: %s\n", p)
+			continue
+		}
 
 		wg.Add(1)
 		go func(peerID string) {
@@ -255,20 +267,33 @@ func (pm *PeerManager) SearchNetwork(query string, myAddr string) []SearchResult
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			dialer, err := pm.Tor.Dialer(context.Background(), nil)
-			if err != nil { return }
+			fmt.Printf("   ➡ Dialing %s...\n", peerID)
+
+			// FIX: Context with Timeout prevents infinite hanging on circuit build
+			dialCtx, dialCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer dialCancel()
+
+			dialer, err := pm.Tor.Dialer(dialCtx, nil)
+			if err != nil {
+				fmt.Printf("   ❌ Dialer Failed %s: %v\n", peerID, err)
+				return
+			}
 
 			client := &http.Client{
 				Transport: &http.Transport{DialContext: dialer.DialContext},
-				Timeout:   4 * time.Second, // Fail Fast
+				Timeout:   10 * time.Second,
 			}
 
 			resp, err := client.Get(fmt.Sprintf("http://%s/api/search?q=%s", peerID, query))
-			if err != nil { return }
+			if err != nil {
+				fmt.Printf("   ❌ Request Failed %s: %v\n", peerID, err)
+				return
+			}
 			defer resp.Body.Close()
 
 			var remoteFiles []filesystem.FileMeta
 			if err := json.NewDecoder(resp.Body).Decode(&remoteFiles); err == nil && len(remoteFiles) > 0 {
+				fmt.Printf("   ✅ HIT: Found %d files on %s\n", len(remoteFiles), peerID)
 				mu.Lock()
 				results = append(results, SearchResult{
 					PeerID: peerID,
@@ -276,11 +301,17 @@ func (pm *PeerManager) SearchNetwork(query string, myAddr string) []SearchResult
 					Source: "network",
 				})
 				mu.Unlock()
-				pm.UpdatePeerIndex(peerID, remoteFiles)
+			} else {
+				fmt.Printf("   ⚪ Miss: No results on %s\n", peerID)
 			}
 		}(p)
 	}
 
 	wg.Wait()
+
+	if len(results) == 0 {
+		go pm.ForwardSearch(query, 2, myAddr)
+	}
+
 	return results
 }

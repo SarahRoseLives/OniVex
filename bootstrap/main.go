@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"onivex/bloom" // Add bloom import
 	"onivex/discovery"
 	"onivex/network"
 )
@@ -46,8 +47,14 @@ func main() {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		// Return larger subset for seeds (200)
 		json.NewEncoder(w).Encode(peers.GetRandomPeers(200))
+	})
+
+	// --- NEW: Empty Bloom Filter ---
+	mux.HandleFunc("/api/filter", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Return empty filter
+		json.NewEncoder(w).Encode(bloom.New(100, 0.01))
 	})
 
 	mux.HandleFunc("/api/index", func(w http.ResponseWriter, r *http.Request) {
