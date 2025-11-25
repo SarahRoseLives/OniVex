@@ -11,7 +11,12 @@ import (
 type FileMeta struct {
 	Name string `json:"name"`
 	Size int64  `json:"size"`
-	Path string `json:"path"` // Relative path for the URL
+	Path string `json:"path"`
+
+	// Future-proofing: These fields don't exist yet, but if V2 adds them,
+	// V1 clients will simply ignore them thanks to 'omitempty'
+	Hash      string `json:"hash,omitempty"`
+	Thumbnail string `json:"thumbnail,omitempty"`
 }
 
 // EnsureDirectories creates uploads/downloads folders if they don't exist
@@ -43,7 +48,6 @@ func GetDownloadsList() ([]FileMeta, error) {
 func scanDirectory(dirName string) ([]FileMeta, error) {
 	var files []FileMeta
 
-	// Ensure dir exists before walking
 	if _, err := os.Stat(dirName); os.IsNotExist(err) {
 		return files, nil
 	}
@@ -53,9 +57,7 @@ func scanDirectory(dirName string) ([]FileMeta, error) {
 			return err
 		}
 		if !info.IsDir() {
-			// Create a relative web path (e.g., uploads/foo.txt -> /foo.txt)
 			relPath := strings.TrimPrefix(path, dirName)
-			// Ensure forward slashes for URLs even on Windows
 			relPath = filepath.ToSlash(relPath)
 
 			files = append(files, FileMeta{
@@ -70,7 +72,6 @@ func scanDirectory(dirName string) ([]FileMeta, error) {
 	return files, err
 }
 
-// SearchLocal filters the file list by a query string (case-insensitive)
 func SearchLocal(query string) []FileMeta {
 	allFiles, _ := GetFileList()
 	if query == "" {

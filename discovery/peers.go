@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"onivex/bloom"
+	"onivex/config" // <--- IMPORTED
 	"onivex/filesystem"
 
 	"github.com/cretz/bine/tor"
@@ -30,7 +31,6 @@ type PeerManager struct {
 	Tor        *tor.Tor
 	DataDir    string
 
-	// Persistent Tor Client (Reused for all requests)
 	torClient  *http.Client
 	clientInit sync.Once
 }
@@ -55,18 +55,13 @@ func NewPeerManager(t *tor.Tor) *PeerManager {
 	return pm
 }
 
-// GetTorClient returns a singleton HTTP client routed through Tor.
-// This prevents repeated calls to the Tor Control Port (GETCONF/GETINFO),
-// eliminating the deadlock/hanging issues.
 func (pm *PeerManager) GetTorClient() *http.Client {
 	pm.clientInit.Do(func() {
-		// Create the dialer context with a long timeout for the initial setup
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 
 		fmt.Println("🔌 Initializing Shared Tor Client...")
 
-		// We can pass nil for config to let Bine figure it out from the Tor instance
 		dialer, err := pm.Tor.Dialer(ctx, nil)
 		if err != nil {
 			fmt.Printf("❌ Failed to create Tor Dialer: %v\n", err)
@@ -76,12 +71,10 @@ func (pm *PeerManager) GetTorClient() *http.Client {
 		pm.torClient = &http.Client{
 			Transport: &http.Transport{
 				DialContext: dialer.DialContext,
-				// Optimize transport for P2P
 				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 20,
 				IdleConnTimeout:     90 * time.Second,
 			},
-			// Global timeout for any request
 			Timeout: 60 * time.Second,
 		}
 		fmt.Println("✅ Shared Tor Client Ready")
@@ -92,9 +85,7 @@ func (pm *PeerManager) GetTorClient() *http.Client {
 func (pm *PeerManager) AddPeer(onionAddr string) {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
-	if onionAddr == "" {
-		return
-	}
+	if onionAddr == "" { return }
 
 	info, exists := pm.KnownPeers[onionAddr]
 	if !exists {
@@ -119,9 +110,7 @@ func (pm *PeerManager) GetPeers() []string {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 	list := []string{}
-	for p := range pm.KnownPeers {
-		list = append(list, p)
-	}
+	for p := range pm.KnownPeers { list = append(list, p) }
 	return list
 }
 
@@ -131,9 +120,7 @@ func (pm *PeerManager) GetRandomPeers(limit int) []string {
 	list := []string{}
 	for p := range pm.KnownPeers {
 		list = append(list, p)
-		if len(list) >= limit {
-			break
-		}
+		if len(list) >= limit { break }
 	}
 	return list
 }
@@ -143,9 +130,7 @@ func (pm *PeerManager) LoadPeers() {
 	defer pm.mu.Unlock()
 	path := filepath.Join(pm.DataDir, "peers.json")
 	data, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
+	if err != nil { return }
 	var loaded map[string]PeerInfo
 	if err := json.Unmarshal(data, &loaded); err == nil {
 		pm.KnownPeers = loaded
@@ -155,22 +140,14 @@ func (pm *PeerManager) LoadPeers() {
 func (pm *PeerManager) SavePeers() {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
-	if len(pm.KnownPeers) == 0 {
-		return
-	}
+	if len(pm.KnownPeers) == 0 { return }
 	path := filepath.Join(pm.DataDir, "peers.json")
 	data, err := json.MarshalIndent(pm.KnownPeers, "", "  ")
-	if err == nil {
-		os.WriteFile(path, data, 0600)
-	}
+	if err == nil { os.WriteFile(path, data, 0600) }
 }
 
 func (pm *PeerManager) StartPersistence(interval time.Duration) {
-	go func() {
-		for range time.Tick(interval) {
-			pm.SavePeers()
-		}
-	}()
+	go func() { for range time.Tick(interval) { pm.SavePeers() } }()
 }
 
 func (pm *PeerManager) StartCleanup(interval time.Duration, peerTimeout time.Duration) {
@@ -186,9 +163,7 @@ func (pm *PeerManager) StartCleanup(interval time.Duration, peerTimeout time.Dur
 				}
 			}
 			pm.mu.Unlock()
-			if count > 0 {
-				pm.SavePeers()
-			}
+			if count > 0 { pm.SavePeers() }
 		}
 	}()
 }
@@ -196,50 +171,53 @@ func (pm *PeerManager) StartCleanup(interval time.Duration, peerTimeout time.Dur
 func (pm *PeerManager) Bootstrap(myOnionAddr string) {
 	if len(BootstrapPeers) > 0 {
 		for _, seed := range BootstrapPeers {
-			if seed != myOnionAddr {
-				go pm.Sync(seed, myOnionAddr)
-			}
+			if seed != myOnionAddr { go pm.Sync(seed, myOnionAddr) }
 		}
 	}
 	pm.mu.RLock()
 	candidates := make([]string, 0, len(pm.KnownPeers))
-	for p := range pm.KnownPeers {
-		candidates = append(candidates, p)
-	}
+	for p := range pm.KnownPeers { candidates = append(candidates, p) }
 	pm.mu.RUnlock()
 
 	limit := 5
 	for i, peer := range candidates {
-		if i >= limit {
-			break
-		}
-		if peer != myOnionAddr {
-			go pm.Sync(peer, myOnionAddr)
-		}
+		if i >= limit { break }
+		if peer != myOnionAddr { go pm.Sync(peer, myOnionAddr) }
 	}
 }
 
-func (pm *PeerManager) Sync(targetPeer string, myAddr string) {
-	client := pm.GetTorClient() // REUSE CLIENT
-	if client == nil { return }
+// Helper to send request with Version Header
+func (pm *PeerManager) sendRequest(method, urlStr string, body []byte) (*http.Response, error) {
+	client := pm.GetTorClient()
+	if client == nil { return nil, fmt.Errorf("client not ready") }
 
+	req, err := http.NewRequest(method, urlStr, bytes.NewBuffer(body))
+	if err != nil { return nil, err }
+
+	req.Header.Set("X-Onivex-Version", config.ProtocolVersion) // <--- UPDATED
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	return client.Do(req)
+}
+
+func (pm *PeerManager) Sync(targetPeer string, myAddr string) {
 	payload := map[string]string{"addr": myAddr}
 	jsonPayload, _ := json.Marshal(payload)
 
-	resp, err := client.Post("http://"+targetPeer+"/api/peers", "application/json", bytes.NewBuffer(jsonPayload))
+	resp, err := pm.sendRequest("POST", "http://"+targetPeer+"/api/peers", jsonPayload)
 	if err == nil {
 		var newPeers []string
 		if json.NewDecoder(resp.Body).Decode(&newPeers) == nil {
 			for _, p := range newPeers {
-				if p != myAddr {
-					pm.AddPeer(p)
-				}
+				if p != myAddr { pm.AddPeer(p) }
 			}
 		}
 		resp.Body.Close()
 	}
 
-	resp, err = client.Get("http://" + targetPeer + "/api/filter")
+	resp, err = pm.sendRequest("GET", "http://"+targetPeer+"/api/filter", nil)
 	if err == nil {
 		var filter bloom.Filter
 		if json.NewDecoder(resp.Body).Decode(&filter) == nil {
@@ -250,22 +228,22 @@ func (pm *PeerManager) Sync(targetPeer string, myAddr string) {
 }
 
 func (pm *PeerManager) ForwardSearch(query string, ttl int, originAddr string) {
-	if ttl <= 0 {
-		return
-	}
-	client := pm.GetTorClient() // REUSE CLIENT
-	if client == nil { return }
+	if ttl <= 0 { return }
 
+	client := pm.GetTorClient()
+	if client == nil { return }
 	peers := pm.GetRandomPeers(3)
 
 	for _, p := range peers {
-		if p == originAddr {
-			continue
-		}
+		if p == originAddr { continue }
 		go func(peerID string) {
 			safeQuery := url.QueryEscape(query)
 			urlStr := fmt.Sprintf("http://%s/api/query?q=%s&ttl=%d&origin=%s", peerID, safeQuery, ttl-1, originAddr)
-			client.Get(urlStr)
+
+			req, _ := http.NewRequest("GET", urlStr, nil)
+			req.Header.Set("X-Onivex-Version", config.ProtocolVersion) // <--- UPDATED
+
+			client.Do(req)
 		}(p)
 	}
 }
@@ -281,20 +259,16 @@ func (pm *PeerManager) SearchNetwork(query string, myAddr string) []SearchResult
 	pm.mu.RLock()
 	candidates := []string{}
 	for peerID, info := range pm.KnownPeers {
-		if peerID == myAddr {
-			continue
-		}
+		if peerID == myAddr { continue }
 		if info.Filter != nil {
-			if info.Filter.Test([]byte(query)) {
-				candidates = append(candidates, peerID)
-			}
+			if info.Filter.Test([]byte(query)) { candidates = append(candidates, peerID) }
 		} else {
 			candidates = append(candidates, peerID)
 		}
 	}
 	pm.mu.RUnlock()
 
-	client := pm.GetTorClient() // REUSE CLIENT
+	client := pm.GetTorClient()
 	if client == nil {
 		fmt.Println("❌ Critical: Tor Client not ready")
 		return []SearchResult{}
@@ -305,9 +279,7 @@ func (pm *PeerManager) SearchNetwork(query string, myAddr string) []SearchResult
 	var wg sync.WaitGroup
 
 	isSeed := make(map[string]bool)
-	for _, s := range BootstrapPeers {
-		isSeed[s] = true
-	}
+	for _, s := range BootstrapPeers { isSeed[s] = true }
 
 	for _, p := range candidates {
 		if p == myAddr { continue }
@@ -322,10 +294,12 @@ func (pm *PeerManager) SearchNetwork(query string, myAddr string) []SearchResult
 			fmt.Printf("   ➡ Dialing %s...\n", peerID)
 
 			safeQuery := url.QueryEscape(query)
-			resp, err := client.Get(fmt.Sprintf("http://%s/api/search?q=%s", peerID, safeQuery))
-			if err != nil {
-				return
-			}
+
+			req, _ := http.NewRequest("GET", fmt.Sprintf("http://%s/api/search?q=%s", peerID, safeQuery), nil)
+			req.Header.Set("X-Onivex-Version", config.ProtocolVersion) // <--- UPDATED
+
+			resp, err := client.Do(req)
+			if err != nil { return }
 			defer resp.Body.Close()
 
 			var remoteFiles []filesystem.FileMeta

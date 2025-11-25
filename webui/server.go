@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"onivex/config" // <--- IMPORTED
 	"onivex/discovery"
 	"onivex/filesystem"
 
@@ -31,7 +32,6 @@ func Start(port int, myAddress string, pm *discovery.PeerManager, t *tor.Tor) {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	fmt.Printf("🖥️  Starting Web UI at http://%s\n", addr)
 
-	// 1. View Handlers
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		peers := pm.GetPeers()
 		data := UIContext{
@@ -50,11 +50,8 @@ func Start(port int, myAddress string, pm *discovery.PeerManager, t *tor.Tor) {
 		tmpl.ExecuteTemplate(w, "layout.html", data)
 	})
 
-	// 2. Library File Server (Allows browser to view/play downloaded files)
-	// Maps http://127.0.0.1:8081/library/files/video.mp4 -> ./downloads/video.mp4
 	http.Handle("/library/files/", http.StripPrefix("/library/files/", http.FileServer(http.Dir("downloads"))))
 
-	// 3. API: Get Library Content
 	http.HandleFunc("/api/library", func(w http.ResponseWriter, r *http.Request) {
 		files, err := filesystem.GetDownloadsList()
 		if err != nil {
@@ -65,7 +62,6 @@ func Start(port int, myAddress string, pm *discovery.PeerManager, t *tor.Tor) {
 		json.NewEncoder(w).Encode(files)
 	})
 
-	// 4. API: Search
 	http.HandleFunc("/api/ui/search", func(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query().Get("q")
 		if query == "" {
@@ -73,10 +69,7 @@ func Start(port int, myAddress string, pm *discovery.PeerManager, t *tor.Tor) {
 			return
 		}
 
-		// A. Local
 		localFiles := filesystem.SearchLocal(query)
-
-		// B. Network
 		networkResults := pm.SearchNetwork(query, myAddress)
 
 		finalResults := []discovery.SearchResult{}
@@ -93,7 +86,6 @@ func Start(port int, myAddress string, pm *discovery.PeerManager, t *tor.Tor) {
 		json.NewEncoder(w).Encode(finalResults)
 	})
 
-	// 5. Download Handler (Secured)
 	http.HandleFunc("/api/download", func(w http.ResponseWriter, r *http.Request) {
 		peerID := r.URL.Query().Get("peer")
 		filePath := r.URL.Query().Get("path")
@@ -114,7 +106,6 @@ func Start(port int, myAddress string, pm *discovery.PeerManager, t *tor.Tor) {
 		}
 
 		os.MkdirAll("downloads", 0755)
-
 		localFileName := filepath.Base(fileName)
 		localPath := filepath.Join("downloads", localFileName)
 
@@ -132,7 +123,6 @@ func Start(port int, myAddress string, pm *discovery.PeerManager, t *tor.Tor) {
 			sourcePath := filepath.Join("uploads", cleanPath)
 			sourceFile, err := os.Open(sourcePath)
 			if err != nil {
-				fmt.Printf("❌ Local file not found: %s\n", sourcePath)
 				http.Error(w, "Local file not found", 404)
 				return
 			}
@@ -158,7 +148,15 @@ func Start(port int, myAddress string, pm *discovery.PeerManager, t *tor.Tor) {
 
 			targetURL := fmt.Sprintf("http://%s/%s", peerID, cleanPath)
 
-			resp, err := torClient.Get(targetURL)
+			// VERSIONED REQUEST
+			req, err := http.NewRequest("GET", targetURL, nil)
+			if err != nil {
+				http.Error(w, "Request creation failed", 500)
+				return
+			}
+			req.Header.Set("X-Onivex-Version", config.ProtocolVersion) // <--- UPDATED
+
+			resp, err := torClient.Do(req)
 			if err != nil {
 				fmt.Printf("   ❌ Request Failed: %v\n", err)
 				http.Error(w, "Connection failed", 502)

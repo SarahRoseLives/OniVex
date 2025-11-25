@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"onivex/bloom"
+	"onivex/config" // <--- IMPORTED
 	"onivex/discovery"
 	"onivex/filesystem"
 	"onivex/network"
@@ -19,10 +20,25 @@ import (
 // Wrapper to log file access requests
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Only log actual file requests (ignore /api calls which are logged elsewhere)
 		if len(r.URL.Path) > 1 && r.URL.Path[0:4] != "/api" {
 			fmt.Printf("📂 Serving File: %s to %s\n", r.URL.Path, r.RemoteAddr)
 		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// Validates incoming versions and stamps outgoing responses
+func versionMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 1. Tag response with our version
+		w.Header().Set("X-Onivex-Version", config.ProtocolVersion) // <--- UPDATED
+
+		// 2. Check client version (Logging only for now)
+		clientVer := r.Header.Get("X-Onivex-Version")
+		if clientVer != "" && clientVer != config.ProtocolVersion { // <--- UPDATED
+			// fmt.Printf("⚠️  Peer Version Mismatch: %s (Them) vs %s (Us)\n", clientVer, config.ProtocolVersion)
+		}
+
 		next.ServeHTTP(w, r)
 	})
 }
@@ -48,13 +64,12 @@ func main() {
 
 	go webui.Start(*port, myAddress, peers, t)
 
-	fmt.Printf("\n✨ ONIVEX CLIENT LIVE\n")
+	fmt.Printf("\n✨ ONIVEX CLIENT LIVE (v%s)\n", config.ProtocolVersion) // <--- UPDATED
 	fmt.Printf("👉 Tor Access: http://%s\n", myAddress)
 	fmt.Printf("👉 Control UI: http://127.0.0.1:%d\n\n", *port)
 
 	mux := http.NewServeMux()
 
-	// Wrap the file handler with logging
 	fileHandler := filesystem.GetFileHandler()
 	mux.Handle("/", loggingMiddleware(fileHandler))
 
@@ -75,24 +90,16 @@ func main() {
 		json.NewEncoder(w).Encode(peers.GetRandomPeers(50))
 	})
 
-	// --- UPDATED FILTER HANDLER (Tokenization Fix) ---
 	mux.HandleFunc("/api/filter", func(w http.ResponseWriter, r *http.Request) {
 		files, _ := filesystem.GetFileList()
 		filter := bloom.New(1000, 0.01)
 		for _, f := range files {
 			name := strings.ToLower(f.Name)
-
-			// 1. Add the exact full filename (e.g., "test.md")
 			filter.Add([]byte(name))
-
-			// 2. Tokenize: Split by common delimiters to allow keyword searching
-			// This splits "my_cool_file.txt" into ["my", "cool", "file", "txt"]
 			tokens := strings.FieldsFunc(name, func(r rune) bool {
 				return r == '.' || r == ' ' || r == '_' || r == '-'
 			})
-
 			for _, token := range tokens {
-				// Add the keyword to the filter if it's not empty
 				if len(token) > 0 {
 					filter.Add([]byte(token))
 				}
@@ -101,7 +108,6 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(filter)
 	})
-	// -------------------------------------------------
 
 	mux.HandleFunc("/api/query", func(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query().Get("q")
@@ -133,5 +139,5 @@ func main() {
 		}
 	}()
 
-	log.Fatal(http.Serve(onion, mux))
+	log.Fatal(http.Serve(onion, versionMiddleware(mux)))
 }
