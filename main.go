@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings" // <--- ADDED: Required for Lowercase normalization
 	"time"
 
 	"onivex/bloom"
@@ -78,7 +79,9 @@ func main() {
 		files, _ := filesystem.GetFileList()
 		filter := bloom.New(1000, 0.01)
 		for _, f := range files {
-			filter.Add([]byte(f.Name))
+			// FIX: Normalize filenames to lowercase before adding to Bloom Filter
+			// This ensures searching for "Ubuntu" finds "ubuntu.iso"
+			filter.Add([]byte(strings.ToLower(f.Name)))
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(filter)

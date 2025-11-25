@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,7 +54,9 @@ func NewPeerManager(t *tor.Tor) *PeerManager {
 func (pm *PeerManager) AddPeer(onionAddr string) {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
-	if onionAddr == "" { return }
+	if onionAddr == "" {
+		return
+	}
 
 	info, exists := pm.KnownPeers[onionAddr]
 	if !exists {
@@ -102,7 +105,9 @@ func (pm *PeerManager) LoadPeers() {
 	defer pm.mu.Unlock()
 	path := filepath.Join(pm.DataDir, "peers.json")
 	data, err := os.ReadFile(path)
-	if err != nil { return }
+	if err != nil {
+		return
+	}
 	var loaded map[string]PeerInfo
 	if err := json.Unmarshal(data, &loaded); err == nil {
 		pm.KnownPeers = loaded
@@ -112,15 +117,21 @@ func (pm *PeerManager) LoadPeers() {
 func (pm *PeerManager) SavePeers() {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
-	if len(pm.KnownPeers) == 0 { return }
+	if len(pm.KnownPeers) == 0 {
+		return
+	}
 	path := filepath.Join(pm.DataDir, "peers.json")
 	data, err := json.MarshalIndent(pm.KnownPeers, "", "  ")
-	if err == nil { os.WriteFile(path, data, 0600) }
+	if err == nil {
+		os.WriteFile(path, data, 0600)
+	}
 }
 
 func (pm *PeerManager) StartPersistence(interval time.Duration) {
 	go func() {
-		for range time.Tick(interval) { pm.SavePeers() }
+		for range time.Tick(interval) {
+			pm.SavePeers()
+		}
 	}()
 }
 
@@ -137,7 +148,9 @@ func (pm *PeerManager) StartCleanup(interval time.Duration, peerTimeout time.Dur
 				}
 			}
 			pm.mu.Unlock()
-			if count > 0 { pm.SavePeers() }
+			if count > 0 {
+				pm.SavePeers()
+			}
 		}
 	}()
 }
@@ -145,28 +158,37 @@ func (pm *PeerManager) StartCleanup(interval time.Duration, peerTimeout time.Dur
 func (pm *PeerManager) Bootstrap(myOnionAddr string) {
 	if len(BootstrapPeers) > 0 {
 		for _, seed := range BootstrapPeers {
-			if seed != myOnionAddr { go pm.Sync(seed, myOnionAddr) }
+			if seed != myOnionAddr {
+				go pm.Sync(seed, myOnionAddr)
+			}
 		}
 	}
 	pm.mu.RLock()
 	candidates := make([]string, 0, len(pm.KnownPeers))
-	for p := range pm.KnownPeers { candidates = append(candidates, p) }
+	for p := range pm.KnownPeers {
+		candidates = append(candidates, p)
+	}
 	pm.mu.RUnlock()
 
 	limit := 5
 	for i, peer := range candidates {
-		if i >= limit { break }
-		if peer != myOnionAddr { go pm.Sync(peer, myOnionAddr) }
+		if i >= limit {
+			break
+		}
+		if peer != myOnionAddr {
+			go pm.Sync(peer, myOnionAddr)
+		}
 	}
 }
 
 func (pm *PeerManager) Sync(targetPeer string, myAddr string) {
-	// Use context timeout for the Dialer to prevent hanging on dead seeds
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer dialCancel()
 
 	dialer, err := pm.Tor.Dialer(dialCtx, nil)
-	if err != nil { return }
+	if err != nil {
+		return
+	}
 
 	client := &http.Client{
 		Transport: &http.Transport{DialContext: dialer.DialContext},
@@ -181,7 +203,9 @@ func (pm *PeerManager) Sync(targetPeer string, myAddr string) {
 		var newPeers []string
 		if json.NewDecoder(resp.Body).Decode(&newPeers) == nil {
 			for _, p := range newPeers {
-				if p != myAddr { pm.AddPeer(p) }
+				if p != myAddr {
+					pm.AddPeer(p)
+				}
 			}
 		}
 		resp.Body.Close()
@@ -198,23 +222,34 @@ func (pm *PeerManager) Sync(targetPeer string, myAddr string) {
 }
 
 func (pm *PeerManager) ForwardSearch(query string, ttl int, originAddr string) {
-	if ttl <= 0 { return }
+	if ttl <= 0 {
+		return
+	}
 	peers := pm.GetRandomPeers(3)
+
+	// FIX 1: Create Dialer ONCE before loop to prevent Control Port Deadlock
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer dialCancel()
+
+	// If Tor is busy, we just fail gracefully instead of hanging
+	dialer, err := pm.Tor.Dialer(dialCtx, nil)
+	if err != nil {
+		return
+	}
+
 	for _, p := range peers {
-		if p == originAddr { continue }
+		if p == originAddr {
+			continue
+		}
 		go func(peerID string) {
-			dialCtx, dialCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer dialCancel()
-
-			dialer, err := pm.Tor.Dialer(dialCtx, nil)
-			if err != nil { return }
-
+			// Reuse the existing dialer!
 			client := &http.Client{
 				Transport: &http.Transport{DialContext: dialer.DialContext},
-				Timeout:   10 * time.Second,
+				Timeout:   20 * time.Second,
 			}
-			url := fmt.Sprintf("http://%s/api/query?q=%s&ttl=%d&origin=%s", peerID, query, ttl-1, originAddr)
-			client.Get(url)
+			safeQuery := url.QueryEscape(query)
+			urlStr := fmt.Sprintf("http://%s/api/query?q=%s&ttl=%d&origin=%s", peerID, safeQuery, ttl-1, originAddr)
+			client.Get(urlStr)
 		}(p)
 	}
 }
@@ -227,39 +262,49 @@ func (pm *PeerManager) SearchNetwork(query string, myAddr string) []SearchResult
 	var mu sync.Mutex
 	query = strings.ToLower(query)
 
-	// 1. Bloom Filter (Local Check)
 	pm.mu.RLock()
 	candidates := []string{}
 	for peerID, info := range pm.KnownPeers {
-		if peerID == myAddr { continue }
+		if peerID == myAddr {
+			continue
+		}
 		if info.Filter != nil {
 			if info.Filter.Test([]byte(query)) {
 				candidates = append(candidates, peerID)
 			}
 		} else {
-			// If no filter, check blindly
 			candidates = append(candidates, peerID)
 		}
 	}
 	pm.mu.RUnlock()
 
-	// 2. Parallel Network Search
+	// --- CRITICAL FIX START ---
+	// Create the Tor Dialer ONCE before entering the goroutines.
+	// This prevents 10 simultaneous requests to the Tor Control Port,
+	// which was causing the "Write line: GETCONF" deadlock.
+
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer dialCancel()
+
+	sharedDialer, err := pm.Tor.Dialer(dialCtx, nil)
+	if err != nil {
+		fmt.Printf("❌ Critical: Could not get Tor Dialer: %v\n", err)
+		return []SearchResult{} // Return empty if Tor is dead
+	}
+	// --- CRITICAL FIX END ---
+
 	maxWorkers := 10
 	sem := make(chan struct{}, maxWorkers)
 	var wg sync.WaitGroup
 
 	isSeed := make(map[string]bool)
-	for _, s := range BootstrapPeers { isSeed[s] = true }
+	for _, s := range BootstrapPeers {
+		isSeed[s] = true
+	}
 
 	for _, p := range candidates {
-		if p == myAddr {
-			fmt.Printf("   ➡ Skipping Self: %s\n", p)
-			continue
-		}
-		if isSeed[p] {
-			fmt.Printf("   ➡ Skipping Seed: %s\n", p)
-			continue
-		}
+		if p == myAddr { continue }
+		if isSeed[p] { continue }
 
 		wg.Add(1)
 		go func(peerID string) {
@@ -269,24 +314,16 @@ func (pm *PeerManager) SearchNetwork(query string, myAddr string) []SearchResult
 
 			fmt.Printf("   ➡ Dialing %s...\n", peerID)
 
-			// FIX: Context with Timeout prevents infinite hanging on circuit build
-			dialCtx, dialCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer dialCancel()
-
-			dialer, err := pm.Tor.Dialer(dialCtx, nil)
-			if err != nil {
-				fmt.Printf("   ❌ Dialer Failed %s: %v\n", peerID, err)
-				return
-			}
-
+			// Reuse the sharedDialer here!
 			client := &http.Client{
-				Transport: &http.Transport{DialContext: dialer.DialContext},
-				Timeout:   10 * time.Second,
+				Transport: &http.Transport{DialContext: sharedDialer.DialContext},
+				Timeout:   45 * time.Second,
 			}
 
-			resp, err := client.Get(fmt.Sprintf("http://%s/api/search?q=%s", peerID, query))
+			safeQuery := url.QueryEscape(query)
+			resp, err := client.Get(fmt.Sprintf("http://%s/api/search?q=%s", peerID, safeQuery))
 			if err != nil {
-				fmt.Printf("   ❌ Request Failed %s: %v\n", peerID, err)
+				// Don't log every timeout, it spams the console
 				return
 			}
 			defer resp.Body.Close()
@@ -301,8 +338,6 @@ func (pm *PeerManager) SearchNetwork(query string, myAddr string) []SearchResult
 					Source: "network",
 				})
 				mu.Unlock()
-			} else {
-				fmt.Printf("   ⚪ Miss: No results on %s\n", peerID)
 			}
 		}(p)
 	}
