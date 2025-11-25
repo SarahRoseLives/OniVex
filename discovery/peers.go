@@ -29,6 +29,10 @@ type PeerManager struct {
 	KnownPeers map[string]PeerInfo
 	Tor        *tor.Tor
 	DataDir    string
+
+	// Persistent Tor Client (Reused for all requests)
+	torClient  *http.Client
+	clientInit sync.Once
 }
 
 type SearchResult struct {
@@ -49,6 +53,40 @@ func NewPeerManager(t *tor.Tor) *PeerManager {
 	}
 	pm.LoadPeers()
 	return pm
+}
+
+// GetTorClient returns a singleton HTTP client routed through Tor.
+// This prevents repeated calls to the Tor Control Port (GETCONF/GETINFO),
+// eliminating the deadlock/hanging issues.
+func (pm *PeerManager) GetTorClient() *http.Client {
+	pm.clientInit.Do(func() {
+		// Create the dialer context with a long timeout for the initial setup
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
+		fmt.Println("🔌 Initializing Shared Tor Client...")
+
+		// We can pass nil for config to let Bine figure it out from the Tor instance
+		dialer, err := pm.Tor.Dialer(ctx, nil)
+		if err != nil {
+			fmt.Printf("❌ Failed to create Tor Dialer: %v\n", err)
+			return
+		}
+
+		pm.torClient = &http.Client{
+			Transport: &http.Transport{
+				DialContext: dialer.DialContext,
+				// Optimize transport for P2P
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 20,
+				IdleConnTimeout:     90 * time.Second,
+			},
+			// Global timeout for any request
+			Timeout: 60 * time.Second,
+		}
+		fmt.Println("✅ Shared Tor Client Ready")
+	})
+	return pm.torClient
 }
 
 func (pm *PeerManager) AddPeer(onionAddr string) {
@@ -182,18 +220,8 @@ func (pm *PeerManager) Bootstrap(myOnionAddr string) {
 }
 
 func (pm *PeerManager) Sync(targetPeer string, myAddr string) {
-	dialCtx, dialCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer dialCancel()
-
-	dialer, err := pm.Tor.Dialer(dialCtx, nil)
-	if err != nil {
-		return
-	}
-
-	client := &http.Client{
-		Transport: &http.Transport{DialContext: dialer.DialContext},
-		Timeout:   30 * time.Second,
-	}
+	client := pm.GetTorClient() // REUSE CLIENT
+	if client == nil { return }
 
 	payload := map[string]string{"addr": myAddr}
 	jsonPayload, _ := json.Marshal(payload)
@@ -225,28 +253,16 @@ func (pm *PeerManager) ForwardSearch(query string, ttl int, originAddr string) {
 	if ttl <= 0 {
 		return
 	}
+	client := pm.GetTorClient() // REUSE CLIENT
+	if client == nil { return }
+
 	peers := pm.GetRandomPeers(3)
-
-	// FIX 1: Create Dialer ONCE before loop to prevent Control Port Deadlock
-	dialCtx, dialCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer dialCancel()
-
-	// If Tor is busy, we just fail gracefully instead of hanging
-	dialer, err := pm.Tor.Dialer(dialCtx, nil)
-	if err != nil {
-		return
-	}
 
 	for _, p := range peers {
 		if p == originAddr {
 			continue
 		}
 		go func(peerID string) {
-			// Reuse the existing dialer!
-			client := &http.Client{
-				Transport: &http.Transport{DialContext: dialer.DialContext},
-				Timeout:   20 * time.Second,
-			}
 			safeQuery := url.QueryEscape(query)
 			urlStr := fmt.Sprintf("http://%s/api/query?q=%s&ttl=%d&origin=%s", peerID, safeQuery, ttl-1, originAddr)
 			client.Get(urlStr)
@@ -278,20 +294,11 @@ func (pm *PeerManager) SearchNetwork(query string, myAddr string) []SearchResult
 	}
 	pm.mu.RUnlock()
 
-	// --- CRITICAL FIX START ---
-	// Create the Tor Dialer ONCE before entering the goroutines.
-	// This prevents 10 simultaneous requests to the Tor Control Port,
-	// which was causing the "Write line: GETCONF" deadlock.
-
-	dialCtx, dialCancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer dialCancel()
-
-	sharedDialer, err := pm.Tor.Dialer(dialCtx, nil)
-	if err != nil {
-		fmt.Printf("❌ Critical: Could not get Tor Dialer: %v\n", err)
-		return []SearchResult{} // Return empty if Tor is dead
+	client := pm.GetTorClient() // REUSE CLIENT
+	if client == nil {
+		fmt.Println("❌ Critical: Tor Client not ready")
+		return []SearchResult{}
 	}
-	// --- CRITICAL FIX END ---
 
 	maxWorkers := 10
 	sem := make(chan struct{}, maxWorkers)
@@ -314,16 +321,9 @@ func (pm *PeerManager) SearchNetwork(query string, myAddr string) []SearchResult
 
 			fmt.Printf("   ➡ Dialing %s...\n", peerID)
 
-			// Reuse the sharedDialer here!
-			client := &http.Client{
-				Transport: &http.Transport{DialContext: sharedDialer.DialContext},
-				Timeout:   45 * time.Second,
-			}
-
 			safeQuery := url.QueryEscape(query)
 			resp, err := client.Get(fmt.Sprintf("http://%s/api/search?q=%s", peerID, safeQuery))
 			if err != nil {
-				// Don't log every timeout, it spams the console
 				return
 			}
 			defer resp.Body.Close()

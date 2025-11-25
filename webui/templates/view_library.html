@@ -1,7 +1,93 @@
 {{ define "view_library" }}
-<div id="view-library" class="hidden w-full h-full bg-slate-950 p-6">
-    <div class="w-full h-full flex items-center justify-center text-slate-500">
-        Library view not yet connected to backend filesystem.
+<div id="view-library" class="hidden w-full h-full bg-slate-950 p-6 flex-col">
+    <div class="w-full h-full bg-slate-900 border border-slate-800 rounded-xl p-6 flex flex-col">
+        <!-- Header -->
+        <div class="flex items-center justify-between mb-6 shrink-0">
+             <div class="flex items-center gap-3">
+                <div class="p-2 bg-purple-500/10 rounded-lg text-purple-500">
+                    <i data-lucide="folder-open" class="w-6 h-6"></i>
+                </div>
+                <div>
+                    <h2 class="text-lg font-bold text-white">Local Library</h2>
+                    <p class="text-xs text-slate-500 font-mono">./downloads/</p>
+                </div>
+            </div>
+            <button onclick="loadLibrary()" class="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors border border-slate-700">
+                <i data-lucide="refresh-cw" class="w-4 h-4"></i> Refresh
+            </button>
+        </div>
+
+        <!-- Grid Container -->
+        <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 overflow-y-auto content-start" id="library-content">
+            <!-- Items injected via JS -->
+        </div>
+
+        <!-- Empty State -->
+        <div id="lib-empty" class="hidden flex-grow flex flex-col items-center justify-center text-slate-500">
+             <i data-lucide="ghost" class="w-12 h-12 mb-2 opacity-20"></i>
+            <p>No downloads yet.</p>
+        </div>
     </div>
 </div>
+
+<script>
+    function getFileIcon(filename) {
+        const ext = filename.split('.').pop().toLowerCase();
+        if(['mp4', 'mkv', 'avi', 'mov'].includes(ext)) return 'film';
+        if(['mp3', 'wav', 'flac', 'ogg'].includes(ext)) return 'music';
+        if(['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)) return 'image';
+        if(['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return 'archive';
+        if(['exe', 'dmg', 'sh', 'bin'].includes(ext)) return 'box';
+        return 'file-text';
+    }
+
+    function loadLibrary() {
+        const container = document.getElementById('library-content');
+        const emptyState = document.getElementById('lib-empty');
+
+        container.innerHTML = '<div class="text-slate-500 text-xs col-span-full">Loading library...</div>';
+
+        fetch('/api/library')
+            .then(res => res.json())
+            .then(files => {
+                container.innerHTML = '';
+                if (!files || files.length === 0) {
+                    emptyState.classList.remove('hidden');
+                    return;
+                }
+
+                emptyState.classList.add('hidden');
+
+                files.forEach(file => {
+                    const icon = getFileIcon(file.name);
+                    const div = document.createElement('div');
+                    // Create direct link to the file server
+                    const link = `/library/files${file.path}`;
+
+                    div.className = "bg-slate-800/50 hover:bg-slate-800 border border-slate-700/50 hover:border-purple-500/50 p-4 rounded-xl cursor-pointer group transition-all animate-fade-in relative";
+                    div.innerHTML = `
+                        <div class="flex justify-between items-start mb-2">
+                            <i data-lucide="${icon}" class="w-8 h-8 text-slate-400 group-hover:text-purple-400 transition-colors"></i>
+                        </div>
+                        <p class="text-sm font-medium text-slate-200 truncate mb-1" title="${file.name}">${file.name}</p>
+                        <p class="text-xs text-slate-500">${formatSize(file.size)}</p>
+                        <a href="${link}" target="_blank" class="absolute inset-0 z-10"></a>
+                    `;
+                    container.appendChild(div);
+                });
+                lucide.createIcons();
+            })
+            .catch(err => {
+                container.innerHTML = `<div class="text-red-500 text-xs col-span-full">Failed to load library: ${err}</div>`;
+            });
+    }
+
+    // Load library when tab is clicked
+    document.addEventListener("DOMContentLoaded", () => {
+        const libBtn = document.getElementById('tab-library');
+        if(libBtn) {
+            libBtn.addEventListener('click', loadLibrary);
+        }
+    });
+</script>
 {{ end }}

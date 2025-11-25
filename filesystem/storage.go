@@ -31,15 +31,30 @@ func GetFileHandler() http.Handler {
 
 // GetFileList scans the uploads folder and returns JSON-ready metadata
 func GetFileList() ([]FileMeta, error) {
+	return scanDirectory("uploads")
+}
+
+// GetDownloadsList scans the downloads folder for the local library
+func GetDownloadsList() ([]FileMeta, error) {
+	return scanDirectory("downloads")
+}
+
+// Helper function to scan a specific directory
+func scanDirectory(dirName string) ([]FileMeta, error) {
 	var files []FileMeta
 
-	err := filepath.Walk("./uploads", func(path string, info os.FileInfo, err error) error {
+	// Ensure dir exists before walking
+	if _, err := os.Stat(dirName); os.IsNotExist(err) {
+		return files, nil
+	}
+
+	err := filepath.Walk(dirName, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 		if !info.IsDir() {
 			// Create a relative web path (e.g., uploads/foo.txt -> /foo.txt)
-			relPath := strings.TrimPrefix(path, "uploads")
+			relPath := strings.TrimPrefix(path, dirName)
 			// Ensure forward slashes for URLs even on Windows
 			relPath = filepath.ToSlash(relPath)
 
