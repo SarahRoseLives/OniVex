@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strings" // <--- ADDED: Required for Lowercase normalization
+	"strings"
 	"time"
 
 	"onivex/bloom"
@@ -54,7 +54,7 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	// UPDATED: Wrap the file handler with logging
+	// Wrap the file handler with logging
 	fileHandler := filesystem.GetFileHandler()
 	mux.Handle("/", loggingMiddleware(fileHandler))
 
@@ -75,17 +75,33 @@ func main() {
 		json.NewEncoder(w).Encode(peers.GetRandomPeers(50))
 	})
 
+	// --- UPDATED FILTER HANDLER (Tokenization Fix) ---
 	mux.HandleFunc("/api/filter", func(w http.ResponseWriter, r *http.Request) {
 		files, _ := filesystem.GetFileList()
 		filter := bloom.New(1000, 0.01)
 		for _, f := range files {
-			// FIX: Normalize filenames to lowercase before adding to Bloom Filter
-			// This ensures searching for "Ubuntu" finds "ubuntu.iso"
-			filter.Add([]byte(strings.ToLower(f.Name)))
+			name := strings.ToLower(f.Name)
+
+			// 1. Add the exact full filename (e.g., "test.md")
+			filter.Add([]byte(name))
+
+			// 2. Tokenize: Split by common delimiters to allow keyword searching
+			// This splits "my_cool_file.txt" into ["my", "cool", "file", "txt"]
+			tokens := strings.FieldsFunc(name, func(r rune) bool {
+				return r == '.' || r == ' ' || r == '_' || r == '-'
+			})
+
+			for _, token := range tokens {
+				// Add the keyword to the filter if it's not empty
+				if len(token) > 0 {
+					filter.Add([]byte(token))
+				}
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(filter)
 	})
+	// -------------------------------------------------
 
 	mux.HandleFunc("/api/query", func(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query().Get("q")
